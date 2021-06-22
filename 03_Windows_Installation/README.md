@@ -7,7 +7,11 @@
 - ### To run the above code 
   ```
   git clone https://github.com/karthickai/tflite.git
-  cd tflite
-  #open TFLite_CPP_Check.sln in Visual Studio 2019.
+  cd tflite/03_Windows_Installation
+  mkdir build && cd build
+  cmake ..
+  #open TFLiteCheck.sln in Visual Studio 2019.
   #Build Release x64
+  cd Release
+  .\TFLiteCheck.exe ..\..\..\models\classification\mobilenet_v1_1.0_224_quant.tflite
   ```
