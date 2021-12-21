@@ -8,45 +8,44 @@
 #include "tensorflow/lite/examples/label_image/get_top_n.h"
 #include "tensorflow/lite/model.h"
 
-// Load Label function
 std::vector<std::string> load_labels(std::string labels_file)
 {
-
-    std::ifstream file(labels_file.c_str()); // Open the Label File
+    std::ifstream file(labels_file.c_str());
     if (!file.is_open())
     {
-        std::cerr << "unable to open file" << std::endl;
+        fprintf(stderr, "unable to open label file\n");
         exit(-1);
     }
     std::string label_str;
     std::vector<std::string> labels;
 
-    while (std::getline(file, label_str)) // Read all lines from file
+    while (std::getline(file, label_str))
     {
         if (label_str.size() > 0)
             labels.push_back(label_str);
     }
-
-    file.close(); // Close The File
+    file.close();
     return labels;
 }
 
 int main(int argc, char **argv)
 {
+
+    // Get Model label and input image
     if (argc != 4)
     {
-        fprintf(stderr, "tflite model and images must be added in argument\nExample TFLiteImageClassification.exe mobilenet_v1_1.0_224_quant.tflite labels.txt download.jpg");
-        return 1;
+        fprintf(stderr, "TfliteClassification.exe modelfile labels image\n");
+        exit(-1);
     }
-    const char *modelFilename = argv[1];
-    const char *labelsFile = argv[2];
+    const char *modelFileName = argv[1];
+    const char *labelFile = argv[2];
     const char *imageFile = argv[3];
 
     // Load Model
-    std::unique_ptr<tflite::FlatBufferModel> model = tflite::FlatBufferModel::BuildFromFile(modelFilename);
+    std::unique_ptr<tflite::FlatBufferModel> model = tflite::FlatBufferModel::BuildFromFile(modelFileName);
     if (model == nullptr)
     {
-        std::cerr << "failed to load model" << std::endl;
+        fprintf(stderr, "failed to load model\n");
         exit(-1);
     }
     // Initiate Interpreter
@@ -55,29 +54,29 @@ int main(int argc, char **argv)
     tflite::InterpreterBuilder(*model.get(), resolver)(&interpreter);
     if (interpreter == nullptr)
     {
-        std::cerr << "failed to initiate interpreter" << std::endl;
+        fprintf(stderr, "Failed to initiate the interpreter\n");
         exit(-1);
     }
+
     if (interpreter->AllocateTensors() != kTfLiteOk)
     {
-        std::cerr << "failed to allocate tensor" << std::endl;
+        fprintf(stderr, "Failed to allocate tensor\n");
         exit(-1);
     }
+    // Configure the interpreter
     interpreter->SetAllowFp16PrecisionForFp32(true);
     interpreter->SetNumThreads(1);
-
     // Get Input Tensor Dimensions
     int input = interpreter->inputs()[0];
     auto height = interpreter->tensor(input)->dims->data[1];
     auto width = interpreter->tensor(input)->dims->data[2];
     auto channels = interpreter->tensor(input)->dims->data[3];
-
     // Load Input Image
     cv::Mat image;
     auto frame = cv::imread(imageFile);
     if (frame.empty())
     {
-        std::cerr << "Can not load picture!" << std::endl;
+        fprintf(stderr, "Failed to load iamge\n");
         exit(-1);
     }
 
@@ -101,37 +100,29 @@ int main(int argc, char **argv)
 
     switch (interpreter->tensor(output)->type)
     {
-    case kTfLiteFloat32:
-        tflite::label_image::get_top_n<float>(interpreter->typed_output_tensor<float>(0), output_size,
-                                              1, threshold, &top_results, kTfLiteFloat32);
+    case kTfLiteInt32:
+        tflite::label_image::get_top_n<float>(interpreter->typed_output_tensor<float>(0), output_size, 1, threshold, &top_results, kTfLiteFloat32);
         break;
     case kTfLiteUInt8:
-        tflite::label_image::get_top_n<uint8_t>(interpreter->typed_output_tensor<uint8_t>(0), output_size,
-                                                1, threshold, &top_results, kTfLiteUInt8);
+        tflite::label_image::get_top_n<uint8_t>(interpreter->typed_output_tensor<uint8_t>(0), output_size, 1, threshold, &top_results, kTfLiteUInt8);
         break;
     default:
-        std::cerr << "cannot handle output type " << interpreter->tensor(output)->type << std::endl;
+        fprintf(stderr, "cannot handle output type\n");
         exit(-1);
     }
-
     // Print inference ms in input image
-    int y0 = 10;
-    int dy = 22;
-    int i = 1;
-    int y = y0 + i++ * dy;
-    cv::putText(frame, "Inference Time in ms: " + std::to_string(inference_time), cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
+    cv::putText(frame, "Infernce Time in ms: " + std::to_string(inference_time), cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
 
     // Load Labels
-    auto labels = load_labels(labelsFile);
+    auto labels = load_labels(labelFile);
 
     // Print labels with confidence in input image
     for (const auto &result : top_results)
     {
         const float confidence = result.first;
         const int index = result.second;
-        std::string output = "Label : " + labels[index] + " Confidence : " + std::to_string(confidence);
-        int y = y0 + i++ * dy;
-        cv::putText(frame, output, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
+        std::string output_txt = "Label :" + labels[index] + " Confidence : " + std::to_string(confidence);
+        cv::putText(frame, output_txt, cv::Point(10, 60), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
     }
 
     // Display image
