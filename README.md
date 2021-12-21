@@ -15,6 +15,7 @@ This Repository contains code and instruction for my TensorFlow Lite C++ ([youtu
 - ### TFlite C++ Windows Installation
 - ### TFlite C++ Mac Installation
 - ### TFlite C++ Linux Installation
+- ### TFlite C++ Image Classification
 
 
 

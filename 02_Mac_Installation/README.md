@@ -1,4 +1,3 @@
-[![Alt text](../images/TFLite-01-thumbnail.png "TensorFlow Lite C++")](https://youtu.be/tdSaPdDqyRc)
 ### This video is the part of the Tensorflow Lite C++ series. In this video, I cover TensorFlow Lite C++ Installation in Mac Os.
 
 <!-- row 6 -->
