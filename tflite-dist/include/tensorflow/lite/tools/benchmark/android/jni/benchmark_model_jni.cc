@@ -28,31 +28,8 @@ namespace tflite {
 namespace benchmark {
 namespace {
 
-class AndroidBenchmarkLoggingListener : public BenchmarkListener {
-  void OnBenchmarkEnd(const BenchmarkResults& results) override {
-    auto inference_us = results.inference_time_us();
-    auto init_us = results.startup_latency_us();
-    auto warmup_us = results.warmup_time_us();
-    std::stringstream results_output;
-    results_output << "Average inference timings in us: "
-                   << "Warmup: " << warmup_us.avg() << ", "
-                   << "Init: " << init_us << ", "
-                   << "Inference: " << inference_us.avg();
-    results_output << "Overall " << results.overall_mem_usage();
-
-#ifdef __ANDROID__
-    __android_log_print(ANDROID_LOG_ERROR, "tflite", "%s",
-                        results_output.str().c_str());
-#else
-    fprintf(stderr, "%s", results_output.str().c_str());
-#endif
-  }
-};
-
 void Run(int argc, char** argv) {
   BenchmarkTfLiteModel benchmark;
-  AndroidBenchmarkLoggingListener listener;
-  benchmark.AddListener(&listener);
   benchmark.Run(argc, argv);
 }
 
@@ -60,9 +37,7 @@ void Run(int argc, char** argv) {
 }  // namespace benchmark
 }  // namespace tflite
 
-#ifdef __cplusplus
 extern "C" {
-#endif
 
 JNIEXPORT void JNICALL
 Java_org_tensorflow_lite_benchmark_BenchmarkModel_nativeRun(JNIEnv* env,
@@ -88,6 +63,4 @@ Java_org_tensorflow_lite_benchmark_BenchmarkModel_nativeRun(JNIEnv* env,
   env->ReleaseStringUTFChars(args_obj, args_chars);
 }
 
-#ifdef __cplusplus
 }  // extern "C"
-#endif  // __cplusplus

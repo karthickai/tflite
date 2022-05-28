@@ -18,7 +18,7 @@ documentation for the Question-Answer model
 The following models are compatible with the `BertNLClassifier` API.
 
 *   Models created by
-    [TensorFlow Lite Model Maker for Question Answer](https://www.tensorflow.org/lite/tutorials/model_maker_question_answer).
+    [TensorFlow Lite Model Maker for BERT Question Answer](https://www.tensorflow.org/lite/tutorials/model_maker_question_answer).
 
 *   The
     [pretrained BERT models on TensorFlow Hub](https://tfhub.dev/tensorflow/collections/lite/task-library/bert-question-answerer/1).
@@ -48,16 +48,26 @@ android {
 dependencies {
     // Other dependencies
 
-    // Import the Task Text Library dependency
-    implementation 'org.tensorflow:tensorflow-lite-task-text:0.0.0-nightly'
+    // Import the Task Text Library dependency (NNAPI is included)
+    implementation 'org.tensorflow:tensorflow-lite-task-text:0.3.0'
 }
 ```
+
+Note: starting from version 4.1 of the Android Gradle plugin, .tflite will be
+added to the noCompress list by default and the aaptOptions above is not needed
+anymore.
 
 ### Step 2: Run inference using the API
 
 ```java
 // Initialization
-BertQuestionAnswerer answerer = BertQuestionAnswerer.createFromFile(androidContext, modelFile);
+BertQuestionAnswererOptions options =
+    BertQuestionAnswererOptions.builder()
+        .setBaseOptions(BaseOptions.builder().setNumThreads(4).build())
+        .build();
+BertQuestionAnswerer answerer =
+    BertQuestionAnswerer.createFromFileAndOptions(
+        androidContext, modelFile, options);
 
 // Run inference
 List<QaAnswer> answers = answerer.answer(contextOfTheQuestion, questionToAsk);
@@ -76,7 +86,7 @@ Add the TensorFlowLiteTaskText pod in Podfile
 ```
 target 'MySwiftAppWithTaskAPI' do
   use_frameworks!
-  pod 'TensorFlowLiteTaskText', '~> 0.0.1-nightly'
+  pod 'TensorFlowLiteTaskText', '~> 0.2.0'
 end
 ```
 
@@ -98,13 +108,11 @@ for more details.
 
 ## Run inference in C++
 
-Note: we are working on improving the usability of the C++ Task Library, such as
-providing prebuilt binaries and creating user-friendly workflows to build from
-source code. The C++ API may be subject to change.
-
 ```c++
 // Initialization
-std::unique_ptr<BertQuestionAnswerer> answerer = BertQuestionAnswerer::CreateFromFile(model_file).value();
+BertQuestionAnswererOptions options;
+options.mutable_base_options()->mutable_model_file()->set_file_name(model_file);
+std::unique_ptr<BertQuestionAnswerer> answerer = BertQuestionAnswerer::CreateFromOptions(options).value();
 
 // Run inference
 std::vector<QaAnswer> positive_results = answerer->Answer(context_of_question, question_to_ask);
@@ -153,7 +161,7 @@ with your own model and test data.
 The `BertQuestionAnswerer` API expects a TFLite model with mandatory
 [TFLite Model Metadata](../../convert/metadata.md).
 
-The Metadata should meet the following requiresments:
+The Metadata should meet the following requirements:
 
 *   `input_process_units` for Wordpiece/Sentencepiece Tokenizer
 

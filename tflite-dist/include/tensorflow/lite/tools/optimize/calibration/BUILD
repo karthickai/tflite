@@ -6,13 +6,33 @@ package(
     default_visibility = [
         "//visibility:public",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 cc_library(
     name = "builtin_logging_op",
     srcs = ["builtin_logging_ops/lstm.cc"],
     hdrs = ["builtin_logging_ops/lstm.h"],
+    copts = tflite_copts(),
+    deps = [
+        ":calibration_logger",
+        "//tensorflow/lite:framework",
+        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/core/api",
+        "//tensorflow/lite/kernels:kernel_util",
+        "//tensorflow/lite/kernels:lstm_shared",
+        "//tensorflow/lite/kernels:op_macros",
+        "//tensorflow/lite/kernels/internal:kernel_utils",
+        "//tensorflow/lite/kernels/internal:optimized_base",
+        "//tensorflow/lite/kernels/internal:reference",
+        "//tensorflow/lite/kernels/internal:tensor_utils",
+    ],
+)
+
+cc_library(
+    name = "custom_logging_op",
+    srcs = ["custom_logging_ops/lstm.cc"],
+    hdrs = ["custom_logging_ops/lstm.h"],
     copts = tflite_copts(),
     deps = [
         ":calibration_logger",
@@ -39,9 +59,11 @@ cc_library(
         ":calibration_common",
         ":calibration_logger",
         ":calibration_reader",
+        ":custom_logging_op",
         ":logging_op",
         ":logging_op_resolver",
         "//tensorflow/lite:framework",
+        "//tensorflow/lite:minimal_logging",
         "//tensorflow/lite:string_util",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/core/api",
@@ -51,7 +73,6 @@ cc_library(
         "//tensorflow/lite/schema:schema_utils",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
         "@flatbuffers",
     ],
 )
@@ -63,8 +84,11 @@ tf_cc_test(
         "--test_model_file=$(location //tensorflow/lite:testdata/multi_add.bin)",
     ],
     data = [
+        "//tensorflow/lite:testdata/call_once_mul.bin",
+        "//tensorflow/lite:testdata/custom_lstm.bin",
         "//tensorflow/lite:testdata/lstm.bin",
         "//tensorflow/lite:testdata/multi_add.bin",
+        "//tensorflow/lite:testdata/multi_subgraphs_while.bin",
         "//tensorflow/lite:testdata/unidirectional_sequence_lstm.bin",
     ],
     tags = [
@@ -107,7 +131,7 @@ cc_test(
         ":logging_op_resolver",
         "//tensorflow/lite:framework",
         "//tensorflow/lite/kernels:builtin_ops",
-        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -135,6 +159,7 @@ cc_library(
         "//tensorflow/lite:minimal_logging",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/core/api",
+        "@com_google_absl//absl/container:flat_hash_map",
     ],
 )
 

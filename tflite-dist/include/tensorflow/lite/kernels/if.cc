@@ -156,8 +156,13 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
     TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, i + 1, &input));
     TfLiteTensor* subgraph_input =
         active_branch_subgraph.tensor(active_branch_subgraph.inputs()[i]);
+
+    if (IsDynamicTensor(subgraph_input)) {
+      TfLiteTensorRealloc(input->bytes, subgraph_input);
+    }
+
     TF_LITE_ENSURE_EQ(context, input->bytes, subgraph_input->bytes);
-    memcpy(subgraph_input->data.raw, input->data.raw, input->bytes);
+    TfLiteTensorCopy(input, subgraph_input);
   }
 
   // Note: It's guaranteed that the subgraphs' `AllocateTensors` are called
@@ -195,8 +200,13 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
         active_branch_subgraph.tensor(active_branch_subgraph.outputs()[i]);
     TfLiteTensor* output;
     TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, i, &output));
+
+    if (IsDynamicTensor(output)) {
+      TfLiteTensorRealloc(subgraph_output->bytes, output);
+    }
+
     TF_LITE_ENSURE_EQ(context, output->bytes, subgraph_output->bytes);
-    memcpy(output->data.raw, subgraph_output->data.raw, output->bytes);
+    TfLiteTensorCopy(subgraph_output, output);
   }
   return kTfLiteOk;
 }

@@ -56,7 +56,14 @@ class SqueezeOpModel : public BaseSqueezeOpModel {
 
   void SetInput(std::initializer_list<T> data) { PopulateTensor(input_, data); }
 
+  void SetStringInput(std::initializer_list<string> data) {
+    PopulateStringTensor(input_, data);
+  }
+
   std::vector<T> GetOutput() { return ExtractVector<T>(output_); }
+  std::vector<string> GetStringOutput() {
+    return ExtractVector<string>(output_);
+  }
   std::vector<int> GetOutputShape() { return GetTensorShape(output_); }
 };
 
@@ -73,7 +80,7 @@ TYPED_TEST(SqueezeOpTest, SqueezeAll) {
   SqueezeOpModel<TypeParam> m({GetTensorType<TypeParam>(), {1, 24, 1}},
                               {GetTensorType<TypeParam>(), {24}}, {});
   m.SetInput(data);
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({24}));
   EXPECT_THAT(
       m.GetOutput(),
@@ -88,7 +95,7 @@ TYPED_TEST(SqueezeOpTest, SqueezeSelectedAxis) {
   SqueezeOpModel<TypeParam> m({GetTensorType<TypeParam>(), {1, 24, 1}},
                               {GetTensorType<TypeParam>(), {24}}, {2});
   m.SetInput(data);
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({1, 24}));
   EXPECT_THAT(
       m.GetOutput(),
@@ -103,7 +110,7 @@ TYPED_TEST(SqueezeOpTest, SqueezeNegativeAxis) {
   SqueezeOpModel<TypeParam> m({GetTensorType<TypeParam>(), {1, 24, 1}},
                               {GetTensorType<TypeParam>(), {24}}, {-1, 0});
   m.SetInput(data);
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({24}));
   EXPECT_THAT(
       m.GetOutput(),
@@ -117,9 +124,40 @@ TYPED_TEST(SqueezeOpTest, SqueezeAllDims) {
       {GetTensorType<TypeParam>(), {1, 1, 1, 1, 1, 1, 1}},
       {GetTensorType<TypeParam>(), {1}}, {});
   m.SetInput(data);
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutputShape(), IsEmpty());
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({3}));
+}
+
+TEST(SqueezeOpTest, SqueezeAllString) {
+  std::initializer_list<std::string> data = {"a", "b"};
+  SqueezeOpModel<std::string> m({GetTensorType<std::string>(), {1, 2, 1}},
+                                {GetTensorType<std::string>(), {2}}, {});
+  m.SetStringInput(data);
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({2}));
+  EXPECT_THAT(m.GetStringOutput(), ElementsAreArray({"a", "b"}));
+}
+
+TEST(SqueezeOpTest, SqueezeNegativeAxisString) {
+  std::initializer_list<std::string> data = {"a", "b"};
+  SqueezeOpModel<std::string> m({GetTensorType<std::string>(), {1, 2, 1}},
+                                {GetTensorType<std::string>(), {24}}, {-1});
+  m.SetStringInput(data);
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({1, 2}));
+  EXPECT_THAT(m.GetStringOutput(), ElementsAreArray({"a", "b"}));
+}
+
+TEST(SqueezeOpTest, SqueezeAllDimsString) {
+  std::initializer_list<std::string> data = {"a"};
+  SqueezeOpModel<std::string> m(
+      {GetTensorType<std::string>(), {1, 1, 1, 1, 1, 1, 1}},
+      {GetTensorType<std::string>(), {1}}, {});
+  m.SetStringInput(data);
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutputShape(), IsEmpty());
+  EXPECT_THAT(m.GetStringOutput(), ElementsAreArray({"a"}));
 }
 
 }  // namespace

@@ -22,10 +22,10 @@ limitations under the License.
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/kernels/cpu_backend_context.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
-// NOLINTNEXTLINE - This header file should't go to the top.
+// NOLINTNEXTLINE - This header file shouldn't go to the top.
 #include "tensorflow/lite/kernels/internal/optimized/integer_ops/transpose_conv.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
-// NOLINTNEXTLINE - This header file should't go to the top.
+// NOLINTNEXTLINE - This header file shouldn't go to the top.
 #include "tensorflow/lite/kernels/internal/reference/integer_ops/transpose_conv.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
@@ -80,8 +80,6 @@ struct OpData {
   int output_shift;
 
   // Per channel output multiplier and shift.
-  // TODO(b/144846950): Add channel dimension index for the kernel to be more
-  // flexible.
   std::vector<int32_t> per_channel_output_multiplier;
   std::vector<int32_t> per_channel_output_shift;
 
@@ -204,7 +202,7 @@ TfLiteStatus ResizeAndTransposeWeights(TfLiteContext* context,
   TF_LITE_ENSURE_STATUS(context->ResizeTensor(context, transposed_weights,
                                               transposed_weights_shape_array));
 
-  // Transpose the weights from from OHWI order to HWOI order.
+  // Transpose the weights from OHWI order to HWOI order.
   TransposeParams transpose_params;
   transpose_params.perm_count = 4;
   transpose_params.perm[0] = 1;
@@ -282,7 +280,8 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
           TF_LITE_ENSURE_EQ(context, bias->params.zero_point, 0);
         }
       } else if (input->type == kTfLiteInt16) {
-        TF_LITE_ENSURE_EQ(context, bias->type, kTfLiteInt64);
+        TF_LITE_ENSURE(context, (bias->type == kTfLiteInt64) ||
+                                    (bias->type == kTfLiteInt32));
         TF_LITE_ENSURE_EQ(context, bias->params.zero_point, 0);
       } else {
         TF_LITE_ENSURE_TYPES_EQ(context, bias->type, input->type);
@@ -355,7 +354,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
     TF_LITE_ENSURE_OK(
         context, GetTemporarySafe(context, node, data->scratch_tensor_index,
                                   &scratch_buffer));
-    if (input->type == kTfLiteInt16) {
+    if (input->type == kTfLiteInt16 && bias && bias->type == kTfLiteInt64) {
       scratch_buffer->type = kTfLiteInt64;
     } else {
       scratch_buffer->type = kTfLiteInt32;
@@ -374,17 +373,20 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
     const auto* affine_quantization =
         reinterpret_cast<TfLiteAffineQuantization*>(
             weights->quantization.params);
+    const int channels_out = weights->dims->data[0];
     TF_LITE_ENSURE(context, affine_quantization);
     TF_LITE_ENSURE(context, affine_quantization->scale);
-    const int number_channel = affine_quantization->scale->size;
-    data->per_channel_output_multiplier.resize(number_channel);
-    data->per_channel_output_shift.resize(number_channel);
+    TF_LITE_ENSURE(context, (affine_quantization->scale->size == 1 ||
+                             affine_quantization->scale->size == channels_out));
+
+    data->per_channel_output_multiplier.resize(channels_out);
+    data->per_channel_output_shift.resize(channels_out);
     TF_LITE_ENSURE_STATUS(tflite::PopulateConvolutionQuantizationParams(
         context, input, weights, bias, output, kTfLiteActNone,
         &data->output_multiplier, &data->output_shift,
         &data->output_activation_min, &data->output_activation_max,
         data->per_channel_output_multiplier.data(),
-        data->per_channel_output_shift.data()));
+        data->per_channel_output_shift.data(), channels_out));
   }
 
   return kTfLiteOk;
@@ -529,6 +531,7 @@ void EvalQuantizedPerChannel(
   }
 }
 
+template <KernelType kernel_type>
 void EvalQuantizedPerChannel16x8(
     TfLiteContext* context, const TfLiteTransposeConvParams* params,
     OpData* data, const TfLiteTensor* input, const TfLiteTensor* weights,
@@ -549,15 +552,43 @@ void EvalQuantizedPerChannel16x8(
   op_params.quantized_activation_min = data->output_activation_min;
   op_params.quantized_activation_max = data->output_activation_max;
 
-  // Need to add optimized kernel
-  reference_integer_ops::TransposeConv(
-      op_params, data->per_channel_output_multiplier.data(),
-      data->per_channel_output_shift.data(), GetTensorShape(input),
-      GetTensorData<int16>(input), GetTensorShape(weights),
-      GetTensorData<int8>(weights), GetTensorShape(bias),
-      GetTensorData<int64_t>(bias), GetTensorShape(output),
-      GetTensorData<int16>(output), GetTensorShape(col2im),
-      GetTensorData<int8>(col2im), GetTensorData<int64_t>(scratch_buffer));
+  // To prevent 32bit accum overflow for 16x8 quantization, it enables the
+  // optimized path only when zero_point is 0.
+  bool has_non_zero_point = input->params.zero_point ||
+                            weights->params.zero_point ||
+                            output->params.zero_point;
+
+  // Fallback to reference kernel when bias_type is int64 as
+  // there is no optimized kernel for int64 bias yet.
+  if (bias && bias->type == kTfLiteInt64) {
+    reference_integer_ops::TransposeConv(
+        op_params, data->per_channel_output_multiplier.data(),
+        data->per_channel_output_shift.data(), GetTensorShape(input),
+        GetTensorData<int16>(input), GetTensorShape(weights),
+        GetTensorData<int8>(weights), GetTensorShape(bias),
+        GetTensorData<int64_t>(bias), GetTensorShape(output),
+        GetTensorData<int16>(output), GetTensorShape(col2im),
+        GetTensorData<int8>(col2im), GetTensorData<int64_t>(scratch_buffer));
+  } else if (kernel_type == kReference || has_non_zero_point) {
+    reference_integer_ops::TransposeConv(
+        op_params, data->per_channel_output_multiplier.data(),
+        data->per_channel_output_shift.data(), GetTensorShape(input),
+        GetTensorData<int16>(input), GetTensorShape(weights),
+        GetTensorData<int8>(weights), GetTensorShape(bias),
+        GetTensorData<int32_t>(bias), GetTensorShape(output),
+        GetTensorData<int16>(output), GetTensorShape(col2im),
+        GetTensorData<int8>(col2im), GetTensorData<int32_t>(scratch_buffer));
+  } else {
+    optimized_integer_ops::TransposeConvV2(
+        op_params, data->per_channel_output_multiplier.data(),
+        data->per_channel_output_shift.data(), GetTensorShape(input),
+        GetTensorData<int16>(input), GetTensorShape(transposed_weights),
+        GetTensorData<int8>(transposed_weights), GetTensorShape(bias),
+        GetTensorData<int32>(bias), GetTensorShape(output),
+        GetTensorData<int16>(output), GetTensorShape(col2im),
+        GetTensorData<int32>(col2im), GetTensorData<int32>(scratch_buffer),
+        CpuBackendContext::GetFromContext(context));
+  }
 }
 
 template <KernelType kernel_type>
@@ -676,9 +707,9 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
       if (data->weights_are_transposed && !IsConstantTensor(weights)) {
         ResizeAndTransposeWeights(context, weights, transposed_weights);
       }
-      EvalQuantizedPerChannel16x8(context, params, data, input, weights,
-                                  transposed_weights, bias, col2im, output,
-                                  scratch_buffer);
+      EvalQuantizedPerChannel16x8<kernel_type>(
+          context, params, data, input, weights, transposed_weights, bias,
+          col2im, output, scratch_buffer);
       break;
     }
     default:

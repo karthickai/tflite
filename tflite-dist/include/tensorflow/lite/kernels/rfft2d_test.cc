@@ -19,17 +19,12 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/custom_ops_register.h"
 #include "tensorflow/lite/kernels/test_util.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-#include "tensorflow/lite/testing/util.h"
 
 namespace tflite {
 namespace ops {
-namespace custom {
-
-TfLiteRegistration* Register_RFFT2D();
+namespace builtin {
 
 namespace {
 
@@ -44,8 +39,8 @@ class Rfft2dOpModel : public SingleOpModel {
     TensorType output_type = TensorType_COMPLEX64;
     output_ = AddOutput({output_type, {}});
 
-    const std::vector<uint8_t> custom_option;
-    SetCustomOp("Rfft2d", custom_option, Register_RFFT2D);
+    SetBuiltinOp(BuiltinOperator_RFFT2D, BuiltinOptions_Rfft2dOptions,
+                 CreateRfft2dOptions(builder_).Union());
     BuildInterpreter({GetShape(input_)});
   }
 
@@ -73,7 +68,7 @@ TEST(Rfft2dOpTest, FftLengthMatchesInputSize) {
                                9, 5, 8, 3});
   // clang-format on
   model.PopulateTensor<int32_t>(model.fft_lengths(), {4, 4});
-  model.Invoke();
+  ASSERT_EQ(model.InvokeUnchecked(), kTfLiteOk);
 
   std::complex<float> expected_result[12] = {
       {75, 0},  {-6, -1}, {9, 0},  {-10, 5},  {-3, 2}, {-6, 11},
@@ -91,7 +86,7 @@ TEST(Rfft2dOpTest, FftLengthSmallerThanInputSize) {
                                9, 5, 8, 3, 0});
   // clang-format on
   model.PopulateTensor<int32_t>(model.fft_lengths(), {4, 4});
-  model.Invoke();
+  ASSERT_EQ(model.InvokeUnchecked(), kTfLiteOk);
 
   std::complex<float> expected_result[12] = {
       {75, 0},  {-6, -1}, {9, 0},  {-10, 5},  {-3, 2}, {-6, 11},
@@ -108,7 +103,7 @@ TEST(Rfft2dOpTest, FftLengthGreaterThanInputSize) {
                                5, 2, 7, 6});
   // clang-format on
   model.PopulateTensor<int32_t>(model.fft_lengths(), {4, 8});
-  model.Invoke();
+  ASSERT_EQ(model.InvokeUnchecked(), kTfLiteOk);
 
   // clang-format off
   std::complex<float> expected_result[20] = {
@@ -134,7 +129,7 @@ TEST(Rfft2dOpTest, InputDimsGreaterThan2) {
                                7., 3., 23., 5.});
   // clang-format on
   model.PopulateTensor<int32_t>(model.fft_lengths(), {2, 4});
-  model.Invoke();
+  ASSERT_EQ(model.InvokeUnchecked(), kTfLiteOk);
 
   // clang-format off
   std::complex<float> expected_result[12] = {
@@ -147,6 +142,6 @@ TEST(Rfft2dOpTest, InputDimsGreaterThan2) {
 }
 
 }  // namespace
-}  // namespace custom
+}  // namespace builtin
 }  // namespace ops
 }  // namespace tflite

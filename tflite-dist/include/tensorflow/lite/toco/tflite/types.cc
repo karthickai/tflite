@@ -92,10 +92,14 @@ void CopyBuffer(const ::tflite::Buffer& buffer, Array* array) {
       return ::tflite::TensorType_INT16;
     case ArrayDataType::kInt32:
       return ::tflite::TensorType_INT32;
+    case ArrayDataType::kUint32:
+      return ::tflite::TensorType_UINT32;
     case ArrayDataType::kInt64:
       return ::tflite::TensorType_INT64;
     case ArrayDataType::kUint8:
       return ::tflite::TensorType_UINT8;
+    case ArrayDataType::kUint16:
+      return ::tflite::TensorType_UINT16;
     case ArrayDataType::kString:
       return ::tflite::TensorType_STRING;
     case ArrayDataType::kBool:
@@ -117,12 +121,16 @@ ArrayDataType DataType::Deserialize(int tensor_type) {
       return ArrayDataType::kInt16;
     case ::tflite::TensorType_INT32:
       return ArrayDataType::kInt32;
+    case ::tflite::TensorType_UINT32:
+      return ArrayDataType::kUint32;
     case ::tflite::TensorType_INT64:
       return ArrayDataType::kInt64;
     case ::tflite::TensorType_STRING:
       return ArrayDataType::kString;
     case ::tflite::TensorType_UINT8:
       return ArrayDataType::kUint8;
+    case ::tflite::TensorType_UINT16:
+      return ArrayDataType::kUint16;
     case ::tflite::TensorType_BOOL:
       return ArrayDataType::kBool;
     case ::tflite::TensorType_COMPLEX64:
@@ -143,6 +151,8 @@ flatbuffers::Offset<flatbuffers::Vector<uint8_t>> DataBuffer::Serialize(
       return CopyBuffer<ArrayDataType::kInt16>(array, builder);
     case ArrayDataType::kInt32:
       return CopyBuffer<ArrayDataType::kInt32>(array, builder);
+    case ArrayDataType::kUint32:
+      return CopyBuffer<ArrayDataType::kUint32>(array, builder);
     case ArrayDataType::kInt64:
       return CopyBuffer<ArrayDataType::kInt64>(array, builder);
     case ArrayDataType::kString:
@@ -170,6 +180,8 @@ void DataBuffer::Deserialize(const ::tflite::Tensor& tensor,
       return CopyBuffer<ArrayDataType::kInt16>(buffer, array);
     case ::tflite::TensorType_INT32:
       return CopyBuffer<ArrayDataType::kInt32>(buffer, array);
+    case ::tflite::TensorType_UINT32:
+      return CopyBuffer<ArrayDataType::kUint32>(buffer, array);
     case ::tflite::TensorType_INT64:
       return CopyBuffer<ArrayDataType::kInt64>(buffer, array);
     case ::tflite::TensorType_STRING:

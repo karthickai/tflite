@@ -15,9 +15,6 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_KERNELS_INTERNAL_OPTIMIZED_NEON_TENSOR_UTILS_H_
 #define TENSORFLOW_LITE_KERNELS_INTERNAL_OPTIMIZED_NEON_TENSOR_UTILS_H_
 
-// TODO(ghodrat): Remove this header file and the dependency to internal data
-// structure.
-#include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/kernels/cpu_backend_context.h"
 #include "tensorflow/lite/kernels/internal/optimized/cpu_check.h"
 #include "tensorflow/lite/kernels/internal/optimized/neon_check.h"
@@ -80,6 +77,21 @@ void SparseMatrixBatchVectorMultiplyAccumulate(
     float* __restrict__ result) {
   NEON_OR_PORTABLE(SparseMatrixBatchVectorMultiplyAccumulate, matrix, ledger,
                    m_rows, m_cols, vector, n_batch, result);
+}
+
+void SparseMatrixBatchVectorMultiplyAccumulate1x16(
+    const int8_t* __restrict__ matrix, const int32_t* __restrict__ segments,
+    const int32_t* __restrict__ indices, int m_rows, int m_cols,
+    const int8_t* __restrict__ vector, const int32_t* __restrict__ bias_vector,
+    int n_batch, const int32_t input_offset, const int32_t output_multiplier,
+    const int32_t output_shift, const int32_t output_offset,
+    const int32_t output_activation_min, const int32_t output_activation_max,
+    int8_t* __restrict__ result) {
+  NEON_OR_PORTABLE(SparseMatrixBatchVectorMultiplyAccumulate1x16, matrix,
+                   segments, indices, m_rows, m_cols, vector, bias_vector,
+                   n_batch, input_offset, output_multiplier, output_shift,
+                   output_offset, output_activation_min, output_activation_max,
+                   result);
 }
 
 void SparseMatrixBatchVectorMultiplyAccumulate(
@@ -222,18 +234,13 @@ void VectorBatchVectorCwiseProductAccumulate(const int16_t* vector, int v_size,
                                              const int16_t* batch_vector,
                                              int n_batch, int32_t multiplier,
                                              int shift, int16_t* result) {
-  PortableVectorBatchVectorCwiseProductAccumulate(
-      vector, v_size, batch_vector, n_batch, multiplier, shift, result);
+  NEON_OR_PORTABLE(VectorBatchVectorCwiseProductAccumulate, vector, v_size,
+                   batch_vector, n_batch, multiplier, shift, result);
 }
 
 float VectorVectorDotProduct(const float* vector1, const float* vector2,
                              int v_size) {
   return NEON_OR_PORTABLE(VectorVectorDotProduct, vector1, vector2, v_size);
-}
-
-void VectorBatchVectorAdd(const float* vector, int v_size, int n_batch,
-                          float* batch_vector) {
-  PortableVectorBatchVectorAdd(vector, v_size, n_batch, batch_vector);
 }
 
 void Sub1Vector(const float* vector, int v_size, float* result) {
@@ -298,9 +305,11 @@ void ReductionSumVector(const int8_t* input_vector, int32_t* output_vector,
                    reduction_size);
 }
 
-void MeanStddevNormalization(const float* input_vector, float* output_vector,
-                             int v_size, int n_batch) {
-  PortableMeanStddevNormalization(input_vector, output_vector, v_size, n_batch);
+void MeanStddevNormalization(const float* __restrict__ input_vector,
+                             float* __restrict__ output_vector, int v_size,
+                             int n_batch) {
+  NEON_OR_PORTABLE(MeanStddevNormalization, input_vector, output_vector, v_size,
+                   n_batch);
 }
 
 void TwoGateSaturatingAdd(const int8_t* input, int8_t input_zp,

@@ -1,17 +1,15 @@
 # Select TensorFlow operators
 
-Caution: This feature is experimental.
-
 Since the TensorFlow Lite builtin operator library only supports a limited
 number of TensorFlow operators, not every model is convertible. For details,
 refer to [operator compatibility](ops_compatibility.md).
 
 To allow conversion, users can enable the usage of
-[certain TensorFlow ops](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/delegates/flex/allowlisted_flex_ops.cc)
-in their TensorFlow Lite model. However, running TensorFlow Lite models with
-TensorFlow ops requires pulling in the core TensorFlow runtime, which increases
-the TensorFlow Lite interpreter binary size. For Android, you can avoid this by
-selectively building only required Tensorflow ops. For the details, refer to
+[certain TensorFlow ops](op_select_allowlist.md) in their TensorFlow Lite model.
+However, running TensorFlow Lite models with TensorFlow ops requires pulling in
+the core TensorFlow runtime, which increases the TensorFlow Lite interpreter
+binary size. For Android, you can avoid this by selectively building only
+required Tensorflow ops. For the details, refer to
 [reduce binary size](../guide/reduce_binary_size.md).
 
 This document outlines how to [convert](#convert_a_model) and
@@ -48,18 +46,21 @@ includes the necessary library of TensorFlow ops.
 To reduce the binary size, please build your own custom AAR files as guided in
 the [next section](#building-the-android-aar). If the binary size is not a
 considerable concern, we recommend using the prebuilt
-[AAR with TensorFlow ops hosted at JCenter](https://bintray.com/google/tensorflow/tensorflow-lite-select-tf-ops).
+[AAR with TensorFlow ops hosted at MavenCentral](https://search.maven.org/artifact/org.tensorflow/tensorflow-lite-select-tf-ops).
 
 You can specify this in your `build.gradle` dependencies by adding it alongside
 the standard TensorFlow Lite AAR as follows:
 
 ```build
 dependencies {
-    implementation 'org.tensorflow:tensorflow-lite:0.0.0-nightly'
+    implementation 'org.tensorflow:tensorflow-lite:0.0.0-nightly-SNAPSHOT'
     // This dependency adds the necessary TF op support.
-    implementation 'org.tensorflow:tensorflow-lite-select-tf-ops:0.0.0-nightly'
+    implementation 'org.tensorflow:tensorflow-lite-select-tf-ops:0.0.0-nightly-SNAPSHOT'
 }
 ```
+
+To use nightly snapshots, make sure that you have added
+[Sonatype snapshot repository](./build_android#use_nightly_snapshots).
 
 Once you've added the dependency, the necessary delegate for handling the
 graph's TensorFlow ops should be automatically installed for graphs that require
@@ -118,7 +119,11 @@ has support for select TensorFlow ops:
 ```build
 allprojects {
     repositories {
-        jcenter()
+        mavenCentral()
+        maven {  // Only for snapshot artifacts
+            name 'ossrh-snapshot'
+            url 'https://oss.sonatype.org/content/repositories/snapshots'
+        }
         mavenLocal()
     }
 }
@@ -133,8 +138,13 @@ dependencies {
 
 #### Using CocoaPods
 
-We provide nightly prebuilt select TF ops CocoaPods, which you can depend on
-alongside the `TensorFlowLiteSwift` or `TensorFlowLiteObjC` CocoaPods.
+We provide nightly prebuilt select TF ops CocoaPods for `armv7` and `arm64`,
+which you can depend on alongside the `TensorFlowLiteSwift` or
+`TensorFlowLiteObjC` CocoaPods.
+
+*Note*: If you need to use select TF ops in an `x86_64` simulator, you can build
+the select ops framework yourself. See [Using Bazel + Xcode](#using_bazel_xcode)
+section for more details.
 
 ```ruby
 # In your Podfile target:
@@ -174,12 +184,12 @@ provide the list of target architectures excluding `i386`.
 
 ```sh
 bazel build -c opt --config=ios --ios_multi_cpus=armv7,arm64,x86_64 \
-  //tensorflow/lite/experimental/ios:TensorFlowLiteSelectTfOps_framework
+  //tensorflow/lite/ios:TensorFlowLiteSelectTfOps_framework
 ```
 
-This will generate the framework under
-`bazel-bin/tensorflow/lite/experimental/ios/` directory. You can add this new
-framework to your Xcode project by following similar steps described under the
+This will generate the framework under `bazel-bin/tensorflow/lite/ios/`
+directory. You can add this new framework to your Xcode project by following
+similar steps described under the
 [Xcode project settings](./build_ios.md#modify_xcode_project_settings_directly)
 section in the iOS build guide.
 
@@ -192,20 +202,32 @@ Flags`, and add:
 -force_load <path/to/your/TensorFlowLiteSelectTfOps.framework/TensorFlowLiteSelectTfOps>
 ```
 
-### C++
+### C/C++
 
-When building TensorFlow Lite libraries using the bazel pipeline, the additional
-TensorFlow ops library can be included and enabled as follows:
+If you're using Bazel or
+[CMake](https://www.tensorflow.org/lite/guide/build_cmake) to build TensorFlow
+Lite interpreter, you can enable Flex delegate by linking a TensorFlow Lite Flex
+delegate shared library. You can build it with Bazel as the following command.
 
-*   Enable monolithic builds if necessary by adding the `--config=monolithic`
-    build flag.
-*   Add the TensorFlow ops delegate library dependency to the build
-    dependencies: `tensorflow/lite/delegates/flex:delegate`.
+```
+bazel build -c opt --config=monolithic tensorflow/lite/delegates/flex:tensorflowlite_flex
+```
+
+This command generates the following shared library in
+`bazel-bin/tensorflow/lite/delegates/flex`.
+
+Platform | Library name
+-------- | ----------------------------
+Linux    | libtensorflowlite_flex.so
+macOS    | libtensorflowlite_flex.dylib
+Windows  | tensorflowlite_flex.dll
 
 Note that the necessary `TfLiteDelegate` will be installed automatically when
-creating the interpreter at runtime as long as the delegate is linked into the
-client library. It is not necessary to explicitly install the delegate instance
-as is typically required with other delegate types.
+creating the interpreter at runtime as long as the shared library is linked. It
+is not necessary to explicitly install the delegate instance as is typically
+required with other delegate types.
+
+**Note:** This feature is available since version 2.7.
 
 ### Python
 
@@ -222,7 +244,7 @@ pip package version since 2.3 for Linux and 2.4 for other environments.
 ### Performance
 
 When using a mixture of both builtin and select TensorFlow ops, all of the same
-TensorFlow Lite optimizations and optimized builtin ops will be be available and
+TensorFlow Lite optimizations and optimized builtin ops will be available and
 usable with the converted model.
 
 The following table describes the average time taken to run inference on
@@ -254,17 +276,14 @@ TFLite builtin ops and 3 Tensorflow ops. For more details, please see the
 
 *   Unsupported types: Certain TensorFlow ops may not support the full set of
     input/output types that are typically available in TensorFlow.
-*   Unsupported ops: Control flow ops and ops that require explicit
-    initialization from resources, like `HashTableV2`, are not yet supported.
-*   Unsupported optimizations: If you apply an optimization known as
-    [post training quantization](../performance/post_training_quantization.md),
-    only the TensorFlow Lite ops will be quantized (or optimized), but the
-    TensorFlow ops will remain as float (or unoptimized).
 
-## Future plans
+## Updates
 
-The following is a list of improvements to this pipeline that are in progress:
-
-*   *Improved performance* - Work is being done to ensure TensorFlow Lite with
-    TensorFlow ops nicely cooperates with hardware accelerated delegates, for
-    example, NNAPI and GPU delegates.
+*   Version 2.6
+    -   Supports for GraphDef-attribute based operators and HashTable resource
+        initializations have improved.
+*   Version 2.5
+    -   You can apply an optimization known as
+        [post training quantization](../performance/post_training_quantization.md)
+*   Version 2.4
+    -   Compatibility with hardware accelerated delegates has improved

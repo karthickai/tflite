@@ -14,23 +14,35 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/interpreter_builder.h"
 
-#include <fcntl.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>
-#include <sys/types.h>
+#include <string.h>
 
-#include "tensorflow/lite/allocation.h"
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include <algorithm>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/core/api/error_reporter.h"
 #include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+#include "tensorflow/lite/core/api/op_resolver.h"
+#include "tensorflow/lite/core/macros.h"
+#include "tensorflow/lite/core/subgraph.h"
+#include "tensorflow/lite/internal/signature_def.h"
+#include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
+#include "tensorflow/lite/model_builder.h"
 #include "tensorflow/lite/profiling/platform_profiler.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/schema/schema_utils.h"
 #include "tensorflow/lite/shared_library.h"
+#include "tensorflow/lite/stderr_reporter.h"
+#include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/util.h"
 #include "tensorflow/lite/version.h"
 
@@ -117,6 +129,28 @@ TfLiteStatus ParseSparseIndexVector(const DimensionMetadata* src,
   return kTfLiteError;
 }
 
+// Helper that returns std::map that corresponds to vector of TensorMap.
+std::map<std::string, uint32_t> GetMapFromTensorMap(
+    const flatbuffers::Vector<flatbuffers::Offset<tflite::TensorMap>>*
+        tensor_map) {
+  if (!tensor_map) return {};
+  std::map<std::string, uint32_t> result;
+  for (const auto tensor : *tensor_map) {
+    if (tensor != nullptr && tensor->name() != nullptr) {
+      result[tensor->name()->c_str()] = tensor->tensor_index();
+    }
+  }
+  return result;
+}
+
+inline bool ShouldCreateLazyDelegateProviders(int num_fp32_tensors) {
+#if defined(XNNPACK_DELEGATE_ENABLE_QS8) || defined(XNNPACK_DELEGATE_ENABLE_QU8)
+  return true;
+#else
+  return num_fp32_tensors > 0;
+#endif
+}
+
 }  // namespace
 
 const char* kEmptyTensorName = "";
@@ -126,26 +160,43 @@ const char* kEmptyTensorName = "";
 // For flex delegate, see also the strong override in
 // lite/delegates/flex/delegate.cc.
 TFLITE_ATTRIBUTE_WEAK Interpreter::TfLiteDelegatePtr AcquireFlexDelegate() {
+  // TF_AcquireFlexDelegate isn't defined on Android, and the following block of
+  // code would have no effect if TF_AcquireFlexDelegate isn't defined, so we
+  // only enable that block for non-Android platforms.  Also, on Android 4.4
+  // (Kitkat), the dlsym() implementation has a bug where dlsym() of an unknown
+  // name will result in a SIGFPE, which would crash the process, so it's
+  // important that on Android 4.4 we *don't* call SharedLibrary::GetSymbol
+  // unless the symbol is sure to exist.
+#if !defined(__ANDROID__)
   auto acquire_flex_delegate_func =
       reinterpret_cast<Interpreter::TfLiteDelegatePtr (*)()>(
           SharedLibrary::GetSymbol("TF_AcquireFlexDelegate"));
   if (acquire_flex_delegate_func) {
     return acquire_flex_delegate_func();
   }
+#endif
 
 #if !defined(TFLITE_IS_MOBILE_PLATFORM)
   // Load TF_AcquireFlexDelegate() from _pywrap_tensorflow_internal.so if it is
   // available.
-  const char* filename_pywrap_tensorflow_internal =
 #if defined(_WIN32)
-      "_pywrap_tensorflow_internal.pyd";
+  const wchar_t* filename_pywrap_tensorflow_internal =
+      L"_pywrap_tensorflow_internal.pyd";
 #elif defined(__APPLE__)
+  const char* filename_pywrap_tensorflow_internal =
       "python/_pywrap_tensorflow_internal.so";
 #else
+  const char* filename_pywrap_tensorflow_internal =
       "_pywrap_tensorflow_internal.so";
 #endif
   void* lib_tf_internal =
       SharedLibrary::LoadLibrary(filename_pywrap_tensorflow_internal);
+#if defined(_WIN32)
+  if (lib_tf_internal == nullptr) {
+    lib_tf_internal = SharedLibrary::LoadLibrary(
+        L"_pywrap_tensorflow_interpreter_wrapper.pyd");
+  }
+#endif
   if (lib_tf_internal) {
     acquire_flex_delegate_func =
         reinterpret_cast<Interpreter::TfLiteDelegatePtr (*)()>(
@@ -160,19 +211,30 @@ TFLITE_ATTRIBUTE_WEAK Interpreter::TfLiteDelegatePtr AcquireFlexDelegate() {
   return Interpreter::TfLiteDelegatePtr(nullptr, [](TfLiteDelegate*) {});
 }
 
-InterpreterBuilder::InterpreterBuilder(const FlatBufferModel& model,
-                                       const OpResolver& op_resolver)
+InterpreterBuilder::InterpreterBuilder(
+    const FlatBufferModel& model, const OpResolver& op_resolver,
+    const InterpreterOptions* options_experimental)
     : model_(model.GetModel()),
       op_resolver_(op_resolver),
       error_reporter_(ValidateErrorReporter(model.error_reporter())),
-      allocation_(model.allocation()) {}
+      metadata_(model.ReadAllMetadata()),
+      allocation_(model.allocation()) {
+  if (options_experimental) {
+    options_ = *options_experimental;
+  }
+}
 
-InterpreterBuilder::InterpreterBuilder(const ::tflite::Model* model,
-                                       const OpResolver& op_resolver,
-                                       ErrorReporter* error_reporter)
+InterpreterBuilder::InterpreterBuilder(
+    const ::tflite::Model* model, const OpResolver& op_resolver,
+    ErrorReporter* error_reporter,
+    const InterpreterOptions* options_experimental)
     : model_(model),
       op_resolver_(op_resolver),
-      error_reporter_(ValidateErrorReporter(error_reporter)) {}
+      error_reporter_(ValidateErrorReporter(error_reporter)) {
+  if (options_experimental) {
+    options_ = *options_experimental;
+  }
+}
 
 InterpreterBuilder::~InterpreterBuilder() {}
 
@@ -457,6 +519,48 @@ TfLiteStatus InterpreterBuilder::ParseSparsity(
   return kTfLiteOk;
 }
 
+TfLiteStatus InterpreterBuilder::ParseSignatureDefs(
+    const flatbuffers::Vector<flatbuffers::Offset<SignatureDef>>*
+        signature_def_list,
+    Interpreter* interpreter) {
+  if (signature_def_list == nullptr || signature_def_list->size() == 0) {
+    return kTfLiteOk;
+  }
+  std::vector<internal::SignatureDef> signature_defs;
+  signature_defs.reserve(signature_def_list->size());
+  for (const auto fb_signature_def : *signature_def_list) {
+    if (fb_signature_def == nullptr) {
+      TF_LITE_REPORT_ERROR(error_reporter_, "NULL SignatureDef in the model.");
+      return kTfLiteError;
+    }
+    if (fb_signature_def->signature_key() == nullptr) {
+      TF_LITE_REPORT_ERROR(error_reporter_,
+                           "Missing exported method name for SignatureDef");
+      return kTfLiteError;
+    }
+    if (fb_signature_def->inputs() == nullptr) {
+      TF_LITE_REPORT_ERROR(error_reporter_,
+                           "NULL SignatureDef inputs for exported method %s",
+                           fb_signature_def->signature_key()->c_str());
+      return kTfLiteError;
+    }
+    if (fb_signature_def->outputs() == nullptr) {
+      TF_LITE_REPORT_ERROR(error_reporter_,
+                           "NULL SignatureDef outputs for exported method %s",
+                           fb_signature_def->signature_key()->c_str());
+      return kTfLiteError;
+    }
+    signature_defs.resize(signature_defs.size() + 1);
+    auto& signature_def = signature_defs.back();
+    signature_def.inputs = GetMapFromTensorMap(fb_signature_def->inputs());
+    signature_def.outputs = GetMapFromTensorMap(fb_signature_def->outputs());
+    signature_def.signature_key = fb_signature_def->signature_key()->c_str();
+    signature_def.subgraph_index = fb_signature_def->subgraph_index();
+  }
+  interpreter->SetSignatureDef(std::move(signature_defs));
+  return kTfLiteOk;
+}
+
 TfLiteStatus InterpreterBuilder::ParseTensors(
     const flatbuffers::Vector<flatbuffers::Offset<Buffer>>* buffers,
     const flatbuffers::Vector<flatbuffers::Offset<Tensor>>* tensors,
@@ -520,11 +624,9 @@ TfLiteStatus InterpreterBuilder::ParseTensors(
       status = kTfLiteError;
     }
 
-    size_t dims_signature_rank = 0;
-    const int* dims_signature_data = nullptr;
+    std::vector<int> dims_signature = {};
     if (tensor->shape_signature()) {
-      dims_signature_rank = tensor->shape_signature()->size();
-      dims_signature_data = tensor->shape_signature()->data();
+      dims_signature = FlatBufferIntArrayToVector(tensor->shape_signature());
     }
 
     bool is_variable = tensor->is_variable();
@@ -556,7 +658,7 @@ TfLiteStatus InterpreterBuilder::ParseTensors(
     } else {
       if (subgraph->SetTensorParametersReadWrite(
               i, type, get_name(tensor), dims, quantization, is_variable,
-              dims_signature_rank, dims_signature_data) != kTfLiteOk) {
+              dims_signature) != kTfLiteOk) {
         error_reporter_->Report("Tensor %d is invalidly specified in schema.\n",
                                 i);
         status = kTfLiteError;
@@ -567,35 +669,49 @@ TfLiteStatus InterpreterBuilder::ParseTensors(
   return status;
 }
 
-TfLiteStatus InterpreterBuilder::ApplyDelegates(Interpreter* interpreter,
-                                                int num_threads) {
+TfLiteStatus InterpreterBuilder::ApplyDelegates(Interpreter* interpreter) {
   // Apply Flex delegate if applicable.
   if (has_flex_op_) {
-    if (auto flex_delegate = AcquireFlexDelegate()) {
-      return interpreter->ModifyGraphWithDelegate(std::move(flex_delegate));
+    if (Interpreter::TfLiteDelegatePtr flex_delegate = AcquireFlexDelegate()) {
+      TF_LITE_ENSURE_STATUS(interpreter->ModifyGraphWithDelegateImpl(
+          // Transfers ownership of flex_delegate to the interpreter.
+          std::move(flex_delegate)));
     }
   }
+  for (TfLiteDelegate* delegate : delegates_) {
+    // Note that we DON'T transfer ownership of the delegate to the interpreter.
+    // (Doing that would cause problems if operator() was invoked twice.)
+    TF_LITE_ENSURE_STATUS(interpreter->ModifyGraphWithDelegateImpl(delegate));
+  }
+  return kTfLiteOk;
+}
 
+TfLiteStatus InterpreterBuilder::SetNumThreads(int num_threads) {
+  if (num_threads < -1) {
+    error_reporter_->Report(
+        "num_threads should be >= 0 or just -1 to let TFLite runtime set the "
+        "value.");
+    return kTfLiteError;
+  }
+  num_threads_ = num_threads;
   return kTfLiteOk;
 }
 
 TfLiteStatus InterpreterBuilder::operator()(
-    std::unique_ptr<Interpreter>* interpreter) {
-  return operator()(interpreter, /*num_threads=*/-1);
+    std::unique_ptr<Interpreter>* interpreter, int num_threads) {
+  TfLiteStatus status = SetNumThreads(num_threads);
+  if (status != kTfLiteOk) {
+    interpreter->reset();
+    return status;
+  }
+  return (*this)(interpreter);
 }
 
 TfLiteStatus InterpreterBuilder::operator()(
-    std::unique_ptr<Interpreter>* interpreter, int num_threads) {
+    std::unique_ptr<Interpreter>* interpreter) {
   if (!interpreter) {
     error_reporter_->Report(
         "Null output pointer passed to InterpreterBuilder.");
-    return kTfLiteError;
-  }
-
-  if (num_threads < -1) {
-    error_reporter_->Report(
-        "num_threads should be >=0 or just -1 to let TFLite runtime set the "
-        "value.");
     return kTfLiteError;
   }
 
@@ -643,12 +759,18 @@ TfLiteStatus InterpreterBuilder::operator()(
   }
 
   interpreter->reset(new Interpreter(error_reporter_));
-  (*interpreter)->SetNumThreads(num_threads);
   if (subgraphs->size() > 1) {
     (*interpreter)->AddSubgraphs(subgraphs->size() - 1);
   }
 
-  (*interpreter)->SetProfiler(tflite::profiling::MaybeCreatePlatformProfiler());
+  // Set num threads after all the subgraphs are added.
+  (*interpreter)->SetNumThreads(num_threads_);
+
+  // Set Interpreter options
+  (*interpreter)->ApplyOptionsImpl(&options_);
+
+  (*interpreter)
+      ->SetProfilerImpl(tflite::profiling::MaybeCreatePlatformProfiler());
 
   for (int subgraph_index = 0; subgraph_index < subgraphs->size();
        ++subgraph_index) {
@@ -657,16 +779,15 @@ TfLiteStatus InterpreterBuilder::operator()(
         (*interpreter)->subgraph(subgraph_index);
     auto operators = subgraph->operators();
     auto tensors = subgraph->tensors();
-    if (!operators || !tensors) {
+    if (!tensors) {
       TF_LITE_REPORT_ERROR(error_reporter_,
-                           "Did not get operators or tensors in subgraph %d.\n",
+                           "Did not get tensors in subgraph %d.\n",
                            subgraph_index);
       return cleanup_and_error();
     }
     if (modified_subgraph->AddTensors(tensors->size()) != kTfLiteOk) {
       return cleanup_and_error();
     }
-    // Set num threads
     // Parse inputs/outputs
     modified_subgraph->SetInputs(
         FlatBufferIntArrayToVector(subgraph->inputs()));
@@ -674,9 +795,11 @@ TfLiteStatus InterpreterBuilder::operator()(
         FlatBufferIntArrayToVector(subgraph->outputs()));
 
     // Finally setup nodes and tensors
-    if (ParseNodes(operators, modified_subgraph) != kTfLiteOk)
-      return cleanup_and_error();
+    // Parse tensors before nodes as ParseNodes checks input tensors for the
+    // nodes.
     if (ParseTensors(buffers, tensors, modified_subgraph) != kTfLiteOk)
+      return cleanup_and_error();
+    if (operators && ParseNodes(operators, modified_subgraph) != kTfLiteOk)
       return cleanup_and_error();
 
     std::vector<int> variables;
@@ -687,17 +810,38 @@ TfLiteStatus InterpreterBuilder::operator()(
       }
     }
     modified_subgraph->SetVariables(std::move(variables));
+    if (subgraph->name()) {
+      modified_subgraph->SetName(subgraph->name()->c_str());
+    }
   }
 
-  if (num_fp32_tensors_ > 0) {
-    (*interpreter)->lazy_delegate_providers_ =
-        op_resolver_.GetDelegates(num_threads);
-  }
-
-  if (ApplyDelegates(interpreter->get(), num_threads) != kTfLiteOk)
+  if (ParseSignatureDefs(model_->signature_defs(), interpreter->get()) !=
+      kTfLiteOk) {
     return cleanup_and_error();
+  }
 
-  return kTfLiteOk;
+  if ((*interpreter)->SetMetadata(metadata_) != kTfLiteOk) {
+    return cleanup_and_error();
+  }
+
+  if (ShouldCreateLazyDelegateProviders(num_fp32_tensors_)) {
+    (*interpreter)->lazy_delegate_providers_ =
+        op_resolver_.GetDelegateCreators();
+  }
+
+  TfLiteStatus status = ApplyDelegates(interpreter->get());
+  if (status != kTfLiteOk) {
+    interpreter->reset();
+  }
+  return status;
+}
+
+void InterpreterBuilder::AddDelegate(TfLiteDelegate* delegate) {
+  if (delegate == nullptr) {
+    TF_LITE_REPORT_ERROR(error_reporter_, "Null delegate.");
+  } else {
+    delegates_.push_back(delegate);
+  }
 }
 
 }  // namespace tflite

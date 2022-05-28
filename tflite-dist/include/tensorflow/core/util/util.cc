@@ -15,9 +15,16 @@ limitations under the License.
 
 #include "tensorflow/core/util/util.h"
 
+#include <string>
+#include <vector>
+
+#include "absl/base/call_once.h"
+#include "tensorflow/core/framework/device_factory.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/util/env_var.h"
 
 namespace tensorflow {
 
@@ -96,21 +103,21 @@ string PrintMemory(const char* ptr, size_t n) {
   return ret;
 }
 
-string SliceDebugString(const TensorShape& shape, const int64 flat) {
+string SliceDebugString(const TensorShape& shape, const int64_t flat) {
   // Special case rank 0 and 1
   const int dims = shape.dims();
   if (dims == 0) return "";
   if (dims == 1) return strings::StrCat("[", flat, "]");
 
   // Compute strides
-  gtl::InlinedVector<int64, 32> strides(dims);
+  gtl::InlinedVector<int64_t, 32> strides(dims);
   strides.back() = 1;
   for (int i = dims - 2; i >= 0; i--) {
     strides[i] = strides[i + 1] * shape.dim_size(i + 1);
   }
 
   // Unflatten index
-  int64 left = flat;
+  int64_t left = flat;
   string result;
   for (int i = 0; i < dims; i++) {
     strings::StrAppend(&result, i ? "," : "[", left / strides[i]);
@@ -120,20 +127,59 @@ string SliceDebugString(const TensorShape& shape, const int64 flat) {
   return result;
 }
 
-#ifdef INTEL_MKL
-bool DisableMKL() {
-  enum MklStatus { MKL_DEFAULT = 0, MKL_ON = 1, MKL_OFF = 2 };
-  static MklStatus status = MKL_DEFAULT;
-  if (status == MKL_DEFAULT) {
-    char* tf_disable_mkl = getenv("TF_DISABLE_MKL");
-    if ((tf_disable_mkl != NULL) && (std::stoi(tf_disable_mkl) == 1)) {
-      VLOG(2) << "TF-MKL: Disabling MKL";
-      status = MKL_OFF;
-    } else {
-      status = MKL_ON;
+bool IsMKLEnabled() {
+#ifndef INTEL_MKL
+  return false;
+#endif  // !INTEL_MKL
+  static absl::once_flag once;
+#ifdef ENABLE_MKL
+  // Keeping TF_DISABLE_MKL env variable for legacy reasons.
+  static bool oneDNN_disabled = false;
+  absl::call_once(once, [&] {
+    TF_CHECK_OK(ReadBoolFromEnvVar("TF_DISABLE_MKL", false, &oneDNN_disabled));
+    if (oneDNN_disabled) VLOG(2) << "TF-MKL: Disabling oneDNN";
+  });
+  return (!oneDNN_disabled);
+#else
+  // Linux: Turn oneDNN on by default for CPUs with neural network features.
+  // Windows: oneDNN is off by default.
+  // No need to guard for other platforms here because INTEL_MKL is only defined
+  // for non-mobile Linux or Windows.
+  static bool oneDNN_enabled =
+#ifdef __linux__
+      port::TestCPUFeature(port::CPUFeature::AVX512_VNNI) ||
+      port::TestCPUFeature(port::CPUFeature::AVX512_BF16) ||
+      port::TestCPUFeature(port::CPUFeature::AVX_VNNI) ||
+      port::TestCPUFeature(port::CPUFeature::AMX_TILE) ||
+      port::TestCPUFeature(port::CPUFeature::AMX_INT8) ||
+      port::TestCPUFeature(port::CPUFeature::AMX_BF16);
+#else
+      false;
+#endif  // __linux__
+  absl::call_once(once, [&] {
+    auto status = ReadBoolFromEnvVar("TF_ENABLE_ONEDNN_OPTS", oneDNN_enabled,
+                                     &oneDNN_enabled);
+    if (!status.ok()) {
+      LOG(WARNING) << "TF_ENABLE_ONEDNN_OPTS is not set to either '0', 'false',"
+                   << " '1', or 'true'. Using the default setting: "
+                   << oneDNN_enabled;
     }
-  }
-  return status == MKL_OFF ? true : false;
+    if (oneDNN_enabled) {
+#ifndef DNNL_AARCH64_USE_ACL
+      LOG(INFO) << "oneDNN custom operations are on. "
+                << "You may see slightly different numerical results due to "
+                << "floating-point round-off errors from different computation "
+                << "orders. To turn them off, set the environment variable "
+                << "`TF_ENABLE_ONEDNN_OPTS=0`.";
+#else
+      LOG(INFO) << "Experimental oneDNN custom operations are on. "
+                << "If you experience issues, please turn them off by setting "
+                << "the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.";
+#endif  // !DNNL_AARCH64_USE_ACL
+    }
+  });
+  return oneDNN_enabled;
+#endif  // ENABLE_MKL
 }
-#endif  // INTEL_MKL
+
 }  // namespace tensorflow

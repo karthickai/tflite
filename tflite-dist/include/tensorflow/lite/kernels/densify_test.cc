@@ -52,7 +52,9 @@ class DensifyOpModel : public SingleOpModel {
     resolver_ = absl::make_unique<SingleOpResolver>(
         BuiltinOperator_DENSIFY, ops::builtin::Register_DENSIFY(), version);
 
-    BuildInterpreter({input.shape});
+    BuildInterpreter({input.shape}, /*num_threads=*/-1,
+                     /*allow_fp32_relax_to_fp16=*/false,
+                     /*apply_delegate=*/false, /*allocate_and_delegate=*/true);
   }
 
   std::vector<T> GetInput() { return ExtractVector<T>(input_); }
@@ -72,7 +74,7 @@ TEST(DensifyOpTest, Float) {
   input.traversal_order = {0, 1};
   input.format = {kTfLiteDimDense, kTfLiteDimSparseCSR};
   DensifyOpModel<float> m(input, dense_values);
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetInput(), ElementsAreArray(sparse_values));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(dense_values));
 }
@@ -86,7 +88,7 @@ TEST(DensifyOpTest, Float3D) {
   input.traversal_order = {0, 1, 2};
   input.format = {kTfLiteDimDense, kTfLiteDimDense, kTfLiteDimSparseCSR};
   DensifyOpModel<float> m(input, dense_values);
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetInput(), ElementsAreArray(sparse_values));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(dense_values));
 }
@@ -100,7 +102,7 @@ TEST(DensifyOpTest, Int8) {
   input.traversal_order = {0, 1};
   input.format = {kTfLiteDimDense, kTfLiteDimSparseCSR};
   DensifyOpModel<int8_t> m(input, dense_values);
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetInput(), ElementsAreArray(sparse_values));
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(dense_values));
 }

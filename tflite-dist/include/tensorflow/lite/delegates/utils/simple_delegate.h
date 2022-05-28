@@ -56,6 +56,8 @@ class SimpleDelegateKernelInterface {
 
   // Actual subgraph inference should happen on this call.
   // Returns status, and signalling any errors.
+  // NOTE: Tensor data pointers (tensor->data) can change every inference, so
+  // the implementation of this method needs to take that into account.
   virtual TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) = 0;
 };
 
@@ -114,8 +116,12 @@ class TfLiteDelegateFactory {
  public:
   // Creates TfLiteDelegate from the provided SimpleDelegateInterface.
   // The returned TfLiteDelegate should be deleted using DeleteSimpleDelegate.
+  // A simple usage of the flags bit mask:
+  // CreateSimpleDelegate(..., kTfLiteDelegateFlagsAllowDynamicTensors |
+  // kTfLiteDelegateFlagsRequirePropagatedShapes)
   static TfLiteDelegate* CreateSimpleDelegate(
-      std::unique_ptr<SimpleDelegateInterface> simple_delegate);
+      std::unique_ptr<SimpleDelegateInterface> simple_delegate,
+      int64_t flags = kTfLiteDelegateFlagsNone);
 
   // Deletes 'delegate' the passed pointer must be the one returned
   // from CreateSimpleDelegate.

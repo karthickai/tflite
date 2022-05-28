@@ -15,20 +15,23 @@ limitations under the License.
 
 #include "tensorflow/lite/interpreter.h"
 
-#include <cassert>
-#include <cstdarg>
-#include <cstdint>
-#include <cstring>
-#include <utility>
+#include <stddef.h>
+#include <stdlib.h>
 
-#include "tensorflow/lite/c/common.h"
-#include "tensorflow/lite/context_util.h"
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "ruy/denormal.h"  // from @ruy
+#include "tensorflow/lite/allocation.h"
 #include "tensorflow/lite/core/api/error_reporter.h"
-#include "tensorflow/lite/delegates/status.h"
-#include "tensorflow/lite/graph_info.h"
-#include "tensorflow/lite/memory_planner.h"
+#include "tensorflow/lite/core/api/profiler.h"
+#include "tensorflow/lite/external_cpu_backend_context.h"
 #include "tensorflow/lite/minimal_logging.h"
-#include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/stderr_reporter.h"
 #include "tensorflow/lite/util.h"
 
 // TODO(b/139446230): Move to portable platform header.
@@ -109,8 +112,6 @@ Interpreter::Interpreter(ErrorReporter* error_reporter)
   own_external_cpu_backend_context_.reset(new ExternalCpuBackendContext());
   external_contexts_[kTfLiteCpuBackendContext] =
       own_external_cpu_backend_context_.get();
-
-  primary_subgraph().UseNNAPI(false);
 }
 
 Interpreter::~Interpreter() {
@@ -160,12 +161,6 @@ void Interpreter::SetExternalContext(TfLiteExternalContextType type,
   primary_subgraph().SetExternalContext(type, ctx);
 }
 
-TfLiteStatus Interpreter::SetCustomAllocationForTensor(
-    int tensor_index, const TfLiteCustomAllocation& allocation) {
-  return primary_subgraph().SetCustomAllocationForTensor(tensor_index,
-                                                         allocation);
-}
-
 TfLiteStatus Interpreter::SetInputs(std::vector<int> inputs) {
   return primary_subgraph().SetInputs(std::move(inputs));
 }
@@ -180,61 +175,12 @@ TfLiteStatus Interpreter::SetVariables(std::vector<int> variables) {
 
 TfLiteStatus Interpreter::AllocateTensors() {
   // Apply the default delegate that TFLite will enable at this point to allow
-  // other user-level delegates to be applied first.
-  if (!lazy_delegate_providers_.empty()) {
-    TFLITE_LOG(TFLITE_LOG_INFO,
-               "Applying %zu TensorFlow Lite delegate(s) lazily.",
-               lazy_delegate_providers_.size());
-    // At the momement, XNNPACK delegate is the only one that might be applied
-    // by default, in which case, the execution will fall back to default
-    // implementation if the XNNPACK delegate fails to be applied. Therefore, we
-    // ignore the return status here and let it fall through the rest of the
-    // code.
-    for (size_t i = 0; i < lazy_delegate_providers_.size(); ++i) {
-      auto status =
-          ModifyGraphWithDelegate(std::move(lazy_delegate_providers_[i]));
-      switch (status) {
-        case kTfLiteOk:
-          TFLITE_LOG(TFLITE_LOG_INFO,
-                     "Successfully applied the default TensorFlow Lite "
-                     "delegate indexed at %zu.",
-                     i);
-          break;
-        case kTfLiteError:
-          TF_LITE_REPORT_ERROR(error_reporter_,
-                               "Failed to apply the default TensorFlow Lite "
-                               "delegate indexed at %zu.",
-                               i);
-          return kTfLiteError;
-        case kTfLiteDelegateError:
-          TF_LITE_REPORT_ERROR(
-              error_reporter_,
-              "Error in applying the default TensorFlow Lite delegate indexed "
-              "at %zu, and all previously applied delegates are reverted.",
-              i);
-          break;
-        case kTfLiteApplicationError:
-          TF_LITE_REPORT_ERROR(error_reporter_,
-                               "Ignoring failed application of the default "
-                               "TensorFlow Lite delegate indexed at %zu.",
-                               i);
-          break;
-        default:
-          TF_LITE_REPORT_ERROR(error_reporter_,
-                               "Unknown status (%d) after applying the default "
-                               "TensorFlow Lite delegate indexed at %zu.",
-                               status, i);
-          return kTfLiteError;
-      }
-    }
-    lazy_delegate_providers_.clear();
-  }
+  // other user-level delegates to be applied first. Only returns error when
+  // the status is kTfLiteError. For other statuses, it will fall back to the
+  // default implementation.
+  if (ApplyLazyDelegateProviders() == kTfLiteError) return kTfLiteError;
 
   return primary_subgraph().AllocateTensors();
-}
-
-void Interpreter::ReserveNodes(int count) {
-  primary_subgraph().ReserveNodes(count);
 }
 
 void Interpreter::AddSubgraphs(int subgraphs_to_add,
@@ -244,8 +190,9 @@ void Interpreter::AddSubgraphs(int subgraphs_to_add,
 
   subgraphs_.reserve(base_index + subgraphs_to_add);
   for (int i = 0; i < subgraphs_to_add; ++i) {
-    Subgraph* subgraph = new Subgraph(error_reporter_, external_contexts_,
-                                      &subgraphs_, &resources_);
+    Subgraph* subgraph =
+        new Subgraph(error_reporter_, external_contexts_, &subgraphs_,
+                     &resources_, &resource_ids_, &initialization_status_map_);
     subgraphs_.emplace_back(subgraph);
   }
 }
@@ -269,16 +216,15 @@ TfLiteStatus Interpreter::ResizeInputTensorStrict(
   return primary_subgraph().ResizeInputTensorStrict(tensor_index, dims);
 }
 
-TfLiteStatus Interpreter::ReleaseNonPersistentMemory() {
-  // TODO(b/138790287): We could do this for all subgraphs whose tensors have
-  // been allocated. However, AllocateTensors() relies on Control Flow ops to
-  // allocate tensors on 'children' subgraphs. Revisit this if required.
-  return primary_subgraph().ReleaseNonPersistentMemory();
-}
-
 TfLiteStatus Interpreter::Invoke() {
   ScopedRuntimeInstrumentationProfile scoped_runtime_event(installed_profiler_,
                                                            "invoke");
+
+  // Denormal floating point numbers could cause significant slowdown on
+  // platforms like x86, therefore, we suppress denormals here to prevent this
+  // from happening.
+  ruy::ScopedSuppressDenormals suppress_denormals;
+
   TF_LITE_ENSURE_STATUS_WITH_SCOPED_INSTRUMENTATION(
       scoped_runtime_event, primary_subgraph().Invoke());
 
@@ -296,10 +242,6 @@ TfLiteStatus Interpreter::Invoke() {
 TfLiteStatus Interpreter::AddTensors(int tensors_to_add,
                                      int* first_new_tensor_index) {
   return primary_subgraph().AddTensors(tensors_to_add, first_new_tensor_index);
-}
-
-TfLiteStatus Interpreter::ResetVariableTensors() {
-  return primary_subgraph().ResetVariableTensors();
 }
 
 TfLiteStatus Interpreter::SetTensorParametersReadOnly(
@@ -344,13 +286,6 @@ TfLiteStatus Interpreter::SetExecutionPlan(const std::vector<int>& new_plan) {
   return primary_subgraph().SetExecutionPlan(new_plan);
 }
 
-void Interpreter::UseNNAPI(bool enable) {
-  TFLITE_LOG_PROD_ONCE(TFLITE_LOG_INFO,
-                       "Interpreter::UseNNAPI() is deprecated. Use "
-                       "tflite::NnApiDelegate() directly instead.");
-  primary_subgraph().UseNNAPI(enable);
-}
-
 TfLiteStatus Interpreter::SetNumThreads(int num_threads) {
   if (num_threads < -1) {
     context_->ReportError(context_,
@@ -359,6 +294,8 @@ TfLiteStatus Interpreter::SetNumThreads(int num_threads) {
     return kTfLiteError;
   }
 
+  // num_threads == 0 has the same effect as num_threads == 1.
+  num_threads = num_threads == 0 ? 1 : num_threads;
   for (auto& subgraph : subgraphs_) {
     subgraph->context()->recommended_num_threads = num_threads;
   }
@@ -372,26 +309,86 @@ TfLiteStatus Interpreter::SetNumThreads(int num_threads) {
   return kTfLiteOk;
 }
 
-void Interpreter::SetAllowFp16PrecisionForFp32(bool allow) {
-  for (auto& subgraph : subgraphs_) {
-    subgraph->context()->allow_fp32_relax_to_fp16 = allow;
+TfLiteStatus Interpreter::ApplyLazyDelegateProviders() {
+  if (lazy_delegate_providers_.empty() || IsFullyDelegated()) return kTfLiteOk;
+
+  // We only apply lazy delegate providers once.
+  TfLiteDelegateCreators delegate_providers;
+  delegate_providers.swap(lazy_delegate_providers_);
+
+  TFLITE_LOG(TFLITE_LOG_INFO,
+             "Applying %zu TensorFlow Lite delegate(s) lazily.",
+             delegate_providers.size());
+  // At the momement, XNNPACK delegate is the only one that might be applied
+  // by default, in which case, the execution will fall back to default
+  // implementation if the XNNPACK delegate fails to be applied.
+  for (size_t i = 0; i < delegate_providers.size(); ++i) {
+    auto delegate_ptr =
+        delegate_providers[i](context_->recommended_num_threads);
+    // Note when XNNPACK-by-default is disabled, the corresponding creator (i.e.
+    // tflite::MaybeCreateXNNPACKDelegate(...)) will return a nullptr.
+    // Therefore, we simply continue with the next one.
+    if (delegate_ptr == nullptr) continue;
+    auto status = ModifyGraphWithDelegateImpl(std::move(delegate_ptr));
+    switch (status) {
+      case kTfLiteOk:
+        TFLITE_LOG(
+            TFLITE_LOG_INFO,
+            "Successfully applied the default TensorFlow Lite "
+            "delegate indexed at %zu.\n *NOTE*: because a delegate has been "
+            "applied, the precision of computations should be unchanged, but "
+            "the exact output tensor values may have changed. If such output "
+            "values are checked in your code, like in your tests etc., please "
+            "consider increasing error tolerance for the check.",
+            i);
+        break;
+      case kTfLiteError:
+        TF_LITE_REPORT_ERROR(error_reporter_,
+                             "Failed to apply the default TensorFlow Lite "
+                             "delegate indexed at %zu.",
+                             i);
+        return kTfLiteError;
+      case kTfLiteDelegateError:
+        TFLITE_LOG(
+            TFLITE_LOG_INFO,
+            "Error in applying the default TensorFlow Lite delegate indexed "
+            "at %zu, and all previously applied delegates are reverted.",
+            i);
+        return kTfLiteDelegateError;
+      case kTfLiteApplicationError:
+        TFLITE_LOG(
+            TFLITE_LOG_INFO,
+            "Failed to apply the default TensorFlow Lite delegate indexed at "
+            "%zu because of incompatibility between runtime and delegate. "
+            "Ignoring the error, and continuing anyway.",
+            i);
+        return kTfLiteApplicationError;
+      case kTfLiteUnresolvedOps:
+        TFLITE_LOG(
+            TFLITE_LOG_INFO,
+            "Failed to apply the default TensorFlow Lite delegate indexed at "
+            "%zu because of unresolved ops (which could be resolved by "
+            "another delegate). Ignoring the error, and continuing anyway.",
+            i);
+        return kTfLiteUnresolvedOps;
+      default:
+        TF_LITE_REPORT_ERROR(error_reporter_,
+                             "Unknown status (%d) after applying the default "
+                             "TensorFlow Lite delegate indexed at %zu.",
+                             status, i);
+        return kTfLiteError;
+    }
   }
+  return kTfLiteOk;
 }
 
-// TODO(b/121264966): Subgraphs added after cancellation is set will not get the
-// cancellation function added to their context.
-void Interpreter::SetCancellationFunction(void* data,
-                                          bool (*check_cancelled_func)(void*)) {
-  for (auto& subgraph : subgraphs_) {
-    subgraph->SetCancellationFunction(data, check_cancelled_func);
-  }
-}
-
-bool Interpreter::IsCancelled() { return primary_subgraph().IsCancelled(); }
-
-TfLiteStatus Interpreter::ModifyGraphWithDelegate(TfLiteDelegate* delegate) {
+TfLiteStatus Interpreter::ModifyGraphWithDelegateImpl(
+    TfLiteDelegate* delegate) {
   TfLiteStatus status = kTfLiteOk;
   for (auto& subgraph : subgraphs_) {
+    if (IsValidationSubgraph(subgraph->GetName().c_str())) {
+      continue;
+    }
     status = subgraph->ModifyGraphWithDelegate(delegate);
     if (status != kTfLiteOk) {
       break;
@@ -412,50 +409,21 @@ TfLiteStatus Interpreter::RemoveAllDelegates() {
   return kTfLiteOk;
 }
 
-bool Interpreter::HasDelegates() { return primary_subgraph().HasDelegates(); }
-
-TfLiteStatus Interpreter::SetBufferHandle(int tensor_index,
-                                          TfLiteBufferHandle buffer_handle,
-                                          TfLiteDelegate* delegate) {
-  TF_LITE_ENSURE(context_, tensor_index < tensors_size());
-  std::vector<TfLiteTensor>& tensors = primary_subgraph().tensors();
-  TfLiteTensor* tensor = &tensors[tensor_index];
-
-  TF_LITE_ENSURE(context_,
-                 tensor->delegate == nullptr || tensor->delegate == delegate);
-  tensor->delegate = delegate;
-  if (tensor->buffer_handle != kTfLiteNullBufferHandle) {
-    TF_LITE_ENSURE(context_, tensor->delegate->FreeBufferHandle != nullptr);
-    tensor->delegate->FreeBufferHandle(context_, tensor->delegate,
-                                       &tensor->buffer_handle);
+TfLiteStatus Interpreter::SetMetadata(
+    const std::map<std::string, std::string>& metadata) {
+  metadata_ = metadata;
+  for (int subgraph_index = 0; subgraph_index < subgraphs_.size();
+       ++subgraph_index) {
+    TF_LITE_ENSURE_STATUS(subgraphs_[subgraph_index]->SetMetadata(&metadata_));
   }
-  tensor->buffer_handle = buffer_handle;
-
   return kTfLiteOk;
 }
 
-TfLiteStatus Interpreter::GetBufferHandle(int tensor_index,
-                                          TfLiteBufferHandle* buffer_handle,
-                                          TfLiteDelegate** delegate) {
-  TF_LITE_ENSURE(context_, tensor_index < tensors_size());
-  std::vector<TfLiteTensor>& tensors = primary_subgraph().tensors();
-  TfLiteTensor* tensor = &tensors[tensor_index];
-
-  *delegate = tensor->delegate;
-  *buffer_handle = tensor->buffer_handle;
-
-  return kTfLiteOk;
+bool Interpreter::IsFullyDelegated() const {
+  return primary_subgraph().IsFullyDelegated();
 }
 
-void Interpreter::SetProfiler(Profiler* profiler) {
-  // Release resources occupied by owned_profiler_ which is replaced by
-  // caller-owned profiler.
-  owned_profiler_.reset(nullptr);
-  installed_profiler_ = profiler;
-  SetSubgraphProfiler();
-}
-
-void Interpreter::SetProfiler(std::unique_ptr<Profiler> profiler) {
+void Interpreter::SetProfilerImpl(std::unique_ptr<Profiler> profiler) {
   owned_profiler_ = std::move(profiler);
   installed_profiler_ = owned_profiler_.get();
   SetSubgraphProfiler();
@@ -469,8 +437,33 @@ void Interpreter::SetSubgraphProfiler() {
   }
 }
 
-Profiler* Interpreter::GetProfiler() {
-  return primary_subgraph().GetProfiler();
+TfLiteStatus Interpreter::ApplyOptionsImpl(InterpreterOptions* options) {
+  if (options == nullptr) {
+    return kTfLiteOk;
+  }
+
+  // Handle `experimental_preserve_all_tensors_`.
+  if (options->GetPreserveAllTensors()) {
+    for (auto& subgraph : subgraphs_) {
+      subgraph->PreserveAllTensorsExperimental();
+    }
+  }
+
+  // Handle `experimental_ensure_dynamic_tensors_are_released_`.
+  if (options->GetEnsureDynamicTensorsAreReleased()) {
+    for (auto& subgraph : subgraphs_) {
+      subgraph->EnsureDynamicTensorsAreReleased();
+    }
+  }
+
+  // Handle `experimental_dynamic_allocation_for_large_tensors_`.
+  if (options->GetDynamicAllocationForLargeTensors() > 0) {
+    auto& main_subgraph = subgraphs_[0];
+    main_subgraph->UseDynamicAllocationForLargeTensors(
+        options->GetDynamicAllocationForLargeTensors());
+    main_subgraph->EnsureDynamicTensorsAreReleased();
+  }
+  return kTfLiteOk;
 }
 
 }  // namespace tflite

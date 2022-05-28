@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <string>
 
+#include "absl/status/status.h"
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 
@@ -36,114 +37,34 @@ absl::Status CreateBuffer(size_t size_in_bytes, bool gpu_read_only,
 
   return absl::OkStatus();
 }
+
+absl::Status CreateSubBuffer(const Buffer& parent, size_t origin_in_bytes,
+                             size_t size_in_bytes, bool gpu_read_only,
+                             CLContext* context, Buffer* result) {
+  cl_mem buffer;
+  if (parent.IsSubBuffer()) {
+    return absl::InvalidArgumentError(
+        "Cannot create a sub-buffer from a sub-buffer!");
+  }
+  RETURN_IF_ERROR(CreateCLSubBuffer(context->context(), parent.GetMemoryPtr(),
+                                    origin_in_bytes, size_in_bytes,
+                                    gpu_read_only, &buffer));
+  *result = Buffer(buffer, size_in_bytes, /*is_sub_buffer=*/true);
+
+  return absl::OkStatus();
+}
 }  // namespace
 
-BufferDescriptor::BufferDescriptor(BufferDescriptor&& desc)
-    : GPUObjectDescriptor(std::move(desc)),
-      element_type(desc.element_type),
-      element_size(desc.element_size),
-      memory_type(desc.memory_type),
-      attributes(std::move(desc.attributes)),
-      size(desc.size),
-      data(std::move(desc.data)) {}
+Buffer::Buffer(cl_mem buffer, size_t size_in_bytes, bool is_sub_buffer)
+    : buffer_(buffer), size_(size_in_bytes), is_sub_buffer_(is_sub_buffer) {}
 
-BufferDescriptor& BufferDescriptor::operator=(BufferDescriptor&& desc) {
-  if (this != &desc) {
-    std::swap(element_type, desc.element_type);
-    std::swap(element_size, desc.element_size);
-    std::swap(memory_type, desc.memory_type);
-    attributes = std::move(desc.attributes);
-    std::swap(size, desc.size);
-    data = std::move(desc.data);
-    GPUObjectDescriptor::operator=(std::move(desc));
-  }
-  return *this;
-}
-
-void BufferDescriptor::Release() { data.clear(); }
-
-GPUResources BufferDescriptor::GetGPUResources() const {
-  GPUResources resources;
-  GPUBufferDescriptor desc;
-  desc.data_type = element_type;
-  desc.access_type = access_type_;
-  desc.element_size = element_size;
-  desc.memory_type = memory_type;
-  desc.attributes = attributes;
-  resources.buffers.push_back({"buffer", desc});
-  return resources;
-}
-
-absl::Status BufferDescriptor::PerformSelector(
-    const std::string& selector, const std::vector<std::string>& args,
-    const std::vector<std::string>& template_args, std::string* result) const {
-  if (selector == "Read") {
-    return PerformReadSelector(args, result);
-  } else if (selector == "GetPtr") {
-    return PerformGetPtrSelector(args, template_args, result);
-  } else {
-    return absl::NotFoundError(absl::StrCat(
-        "BufferDescriptor don't have selector with name - ", selector));
-  }
-}
-
-absl::Status BufferDescriptor::PerformReadSelector(
-    const std::vector<std::string>& args, std::string* result) const {
-  if (args.size() != 1) {
-    return absl::NotFoundError(
-        absl::StrCat("BufferDescriptor Read require one argument, but ",
-                     args.size(), " was passed"));
-  }
-  *result = absl::StrCat("buffer[", args[0], "]");
-  return absl::OkStatus();
-}
-
-absl::Status BufferDescriptor::PerformGetPtrSelector(
-    const std::vector<std::string>& args,
-    const std::vector<std::string>& template_args, std::string* result) const {
-  if (args.size() > 1) {
-    return absl::NotFoundError(absl::StrCat(
-        "BufferDescriptor GetPtr require one or zero arguments, but ",
-        args.size(), " was passed"));
-  }
-  if (template_args.size() > 1) {
-    return absl::NotFoundError(
-        absl::StrCat("BufferDescriptor GetPtr require one or zero teemplate "
-                     "arguments, but ",
-                     template_args.size(), " was passed"));
-  }
-  std::string conversion;
-  if (template_args.size() == 1) {
-    const std::string type_name = ToCLDataType(element_type, element_size);
-    if (type_name != template_args[0]) {
-      conversion = absl::StrCat("(", MemoryTypeToCLType(memory_type), " ",
-                                template_args[0], "*)&");
-    }
-  }
-  if (args.empty()) {
-    *result = absl::StrCat(conversion, "buffer");
-  } else if (conversion.empty()) {
-    *result = absl::StrCat("(buffer + ", args[0], ")");
-  } else {
-    *result = absl::StrCat(conversion, "buffer[", args[0], "]");
-  }
-  return absl::OkStatus();
-}
-
-absl::Status BufferDescriptor::CreateGPUObject(CLContext* context,
-                                               GPUObjectPtr* result) const {
-  Buffer gpu_buffer;
-  RETURN_IF_ERROR(gpu_buffer.CreateFromBufferDescriptor(*this, context));
-  *result = absl::make_unique<Buffer>(std::move(gpu_buffer));
-  return absl::OkStatus();
-}
-
-Buffer::Buffer(cl_mem buffer, size_t size_in_bytes)
-    : buffer_(buffer), size_(size_in_bytes) {}
-
-Buffer::Buffer(Buffer&& buffer) : buffer_(buffer.buffer_), size_(buffer.size_) {
+Buffer::Buffer(Buffer&& buffer)
+    : buffer_(buffer.buffer_),
+      size_(buffer.size_),
+      is_sub_buffer_(buffer.is_sub_buffer_) {
   buffer.buffer_ = nullptr;
   buffer.size_ = 0;
+  buffer.is_sub_buffer_ = false;
 }
 
 Buffer& Buffer::operator=(Buffer&& buffer) {
@@ -151,6 +72,7 @@ Buffer& Buffer::operator=(Buffer&& buffer) {
     Release();
     std::swap(size_, buffer.size_);
     std::swap(buffer_, buffer.buffer_);
+    std::swap(is_sub_buffer_, buffer.is_sub_buffer_);
   }
   return *this;
 }
@@ -160,6 +82,7 @@ void Buffer::Release() {
     clReleaseMemObject(buffer_);
     buffer_ = nullptr;
     size_ = 0;
+    is_sub_buffer_ = false;
   }
 }
 
@@ -198,6 +121,14 @@ absl::Status CreateReadOnlyBuffer(size_t size_in_bytes, const void* data,
 absl::Status CreateReadWriteBuffer(size_t size_in_bytes, CLContext* context,
                                    Buffer* result) {
   return CreateBuffer(size_in_bytes, false, nullptr, context, result);
+}
+
+absl::Status CreateReadWriteSubBuffer(const Buffer& parent,
+                                      size_t origin_in_bytes,
+                                      size_t size_in_bytes, CLContext* context,
+                                      Buffer* result) {
+  return CreateSubBuffer(parent, origin_in_bytes, size_in_bytes,
+                         /*gpu_read_only=*/false, context, result);
 }
 
 }  // namespace cl

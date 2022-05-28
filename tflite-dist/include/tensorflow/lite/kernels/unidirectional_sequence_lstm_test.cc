@@ -416,7 +416,7 @@ class BaseUnidirectionalLstmTest : public ::testing::TestWithParam<bool> {
       }
     }
 
-    lstm->Invoke();
+    ASSERT_EQ(lstm->InvokeUnchecked(), kTfLiteOk);
 
     const int num_outputs = lstm->num_outputs();
     EXPECT_GT(num_outputs, 0);
@@ -2529,7 +2529,7 @@ class BaseLayerNormUnidirectionalLstmTest : public ::testing::Test {
       }
     }
 
-    lstm->Invoke();
+    ASSERT_EQ(lstm->InvokeUnchecked(), kTfLiteOk);
 
     const int num_outputs = lstm->num_outputs();
     EXPECT_GT(num_outputs, 0);
@@ -3176,12 +3176,17 @@ TEST(IntegerUnidirectionalSequenceLstmOpTest,
 
   // Invoke and verify the result.
   lstm.SetInput(lstm_input);
-  lstm.Invoke();
+  ASSERT_EQ(lstm.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(lstm.GetOutput(), ElementsAreArray(expected_output));
 }
 
 TEST(IntegerUnidirectionalSequenceLstmOpTest,
      NoCifg_Peephole_Projection_LayerNorm) {
+  // TODO(b/179706893): Fix test flakiness on API 30.
+  if (SingleOpModel::GetForceUseNnapi()) {
+    return;
+  }
+
   // Hyper parameters.
   const int n_batch = 2;
   const int n_input = 5;
@@ -3340,7 +3345,7 @@ TEST(IntegerUnidirectionalSequenceLstmOpTest,
 
   // Invoke and verify the result.
   lstm.SetInput(lstm_input);
-  lstm.Invoke();
+  ASSERT_EQ(lstm.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(lstm.GetOutput(), ElementsAreArray(expected_output));
 }
 

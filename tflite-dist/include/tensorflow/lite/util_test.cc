@@ -15,10 +15,14 @@ limitations under the License.
 
 #include "tensorflow/lite/util.h"
 
+#include <stddef.h>
+#include <stdlib.h>
+
+#include <string>
 #include <vector>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
@@ -117,10 +121,22 @@ TEST(GetOpNameByRegistration, CustomName) {
   op_name = GetOpNameByRegistration(registration);
   EXPECT_EQ("DELEGATE TestDelegate", op_name);
 }
+
+TEST(ValidationSubgraph, NameIsDetected) {
+  EXPECT_FALSE(IsValidationSubgraph(nullptr));
+  EXPECT_FALSE(IsValidationSubgraph(""));
+  EXPECT_FALSE(IsValidationSubgraph("a name"));
+  EXPECT_FALSE(IsValidationSubgraph("VALIDATIONfoo"));
+  EXPECT_TRUE(IsValidationSubgraph("VALIDATION:"));
+  EXPECT_TRUE(IsValidationSubgraph("VALIDATION:main"));
+}
+
+TEST(MultiplyAndCheckOverflow, Validate) {
+  size_t res = 0;
+  EXPECT_TRUE(MultiplyAndCheckOverflow(1, 2, &res) == kTfLiteOk);
+  EXPECT_FALSE(MultiplyAndCheckOverflow(static_cast<size_t>(123456789023),
+                                        1223423425, &res) == kTfLiteOk);
+}
+
 }  // namespace
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

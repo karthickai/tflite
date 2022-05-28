@@ -12,6 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include "tensorflow/lite/kernels/internal/optimized/resize_bilinear.h"
+
 #include <stdint.h>
 
 #include <initializer_list>
@@ -83,7 +85,7 @@ TEST_P(ResizeBilinearOpTest, HorizontalResize) {
   ResizeBilinearOpModel m({TensorType_FLOAT32, {1, 1, 2, 1}}, {1, 3},
                           GetParam());
   m.SetInput<float>({3, 6});
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<float>(),
               ElementsAreArray(ArrayFloatNear({3, 5, 6})));
 }
@@ -91,7 +93,7 @@ TEST_P(ResizeBilinearOpTest, HorizontalResize) {
 TEST_P(ResizeBilinearOpTest, HorizontalResizeUInt8) {
   ResizeBilinearOpModel m({TensorType_UINT8, {1, 1, 2, 1}}, {1, 3}, GetParam());
   m.SetInput<uint8>({3, 6});
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<uint8>(),
               ElementsAreArray(ArrayFloatNear({3, 5, 6})));
 }
@@ -99,8 +101,19 @@ TEST_P(ResizeBilinearOpTest, HorizontalResizeUInt8) {
 TEST_P(ResizeBilinearOpTest, HorizontalResizeInt8) {
   ResizeBilinearOpModel m({TensorType_INT8, {1, 1, 2, 1}}, {1, 3}, GetParam());
   m.SetInput<int8_t>({3, 6});
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<int8_t>(),
+              ElementsAreArray(ArrayFloatNear({3, 5, 6})));
+}
+
+TEST_P(ResizeBilinearOpTest, HorizontalResizeInt16) {
+  if (SingleOpModel::GetForceUseNnapi()) {
+    return;
+  }
+  ResizeBilinearOpModel m({TensorType_INT16, {1, 1, 2, 1}}, {1, 3}, GetParam());
+  m.SetInput<int16_t>({3, 6});
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear({3, 5, 6})));
 }
 
@@ -108,7 +121,7 @@ TEST_P(ResizeBilinearOpTest, VerticalResize) {
   ResizeBilinearOpModel m({TensorType_FLOAT32, {1, 2, 1, 1}}, {3, 1},
                           GetParam());
   m.SetInput<float>({3, 9});
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<float>(),
               ElementsAreArray(ArrayFloatNear({3, 7, 9})));
 }
@@ -116,7 +129,7 @@ TEST_P(ResizeBilinearOpTest, VerticalResize) {
 TEST_P(ResizeBilinearOpTest, VerticalResizeUInt8) {
   ResizeBilinearOpModel m({TensorType_UINT8, {1, 2, 1, 1}}, {3, 1}, GetParam());
   m.SetInput<uint8>({3, 9});
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<uint8>(),
               ElementsAreArray(ArrayFloatNear({3, 7, 9})));
 }
@@ -124,8 +137,19 @@ TEST_P(ResizeBilinearOpTest, VerticalResizeUInt8) {
 TEST_P(ResizeBilinearOpTest, VerticalResizeInt8) {
   ResizeBilinearOpModel m({TensorType_INT8, {1, 2, 1, 1}}, {3, 1}, GetParam());
   m.SetInput<int8_t>({3, 9});
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<int8_t>(),
+              ElementsAreArray(ArrayFloatNear({3, 7, 9})));
+}
+
+TEST_P(ResizeBilinearOpTest, VerticalResizeInt16) {
+  if (SingleOpModel::GetForceUseNnapi()) {
+    return;
+  }
+  ResizeBilinearOpModel m({TensorType_INT16, {1, 2, 1, 1}}, {3, 1}, GetParam());
+  m.SetInput<int16_t>({3, 9});
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear({3, 7, 9})));
 }
 
@@ -136,7 +160,7 @@ TEST_P(ResizeBilinearOpTest, TwoDimensionalResize) {
       3, 6,  //
       9, 12  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray(ArrayFloatNear({
                                         3, 5, 6,    //
                                         7, 9, 10,   //
@@ -150,7 +174,7 @@ TEST_P(ResizeBilinearOpTest, TwoDimensionalResizeUInt8) {
       3, 6,  //
       9, 12  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<uint8>(), ElementsAreArray(ArrayFloatNear({
                                         3, 5, 6,    //
                                         7, 9, 10,   //
@@ -164,12 +188,29 @@ TEST_P(ResizeBilinearOpTest, TwoDimensionalResizeInt8) {
       3, 6,  //
       9, 12  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<int8_t>(), ElementsAreArray(ArrayFloatNear({
                                          3, 5, 6,    //
                                          7, 9, 10,   //
                                          9, 11, 12,  //
                                      })));
+}
+
+TEST_P(ResizeBilinearOpTest, TwoDimensionalResizeInt16) {
+  if (SingleOpModel::GetForceUseNnapi()) {
+    return;
+  }
+  ResizeBilinearOpModel m({TensorType_INT16, {1, 2, 2, 1}}, {3, 3}, GetParam());
+  m.SetInput<int16_t>({
+      3, 6,  //
+      9, 12  //
+  });
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput<int16_t>(), ElementsAreArray(ArrayFloatNear({
+                                          3, 5, 6,    //
+                                          7, 9, 10,   //
+                                          9, 11, 12,  //
+                                      })));
 }
 
 TEST_P(ResizeBilinearOpTest, TwoDimensionalResizeWithTwoBatches) {
@@ -181,7 +222,7 @@ TEST_P(ResizeBilinearOpTest, TwoDimensionalResizeWithTwoBatches) {
       4, 10,  //
       10, 16  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray(ArrayFloatNear({
                                         3, 5, 6,     //
                                         7, 9, 10,    //
@@ -202,7 +243,7 @@ TEST_P(ResizeBilinearOpTest,
       1, 2,  //
       3, 4   //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   // clang-format off
   EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray(ArrayFloatNear({
     1, 1.5, 2,  //
@@ -222,7 +263,7 @@ TEST_P(ResizeBilinearOpTest, ThreeDimensionalResize) {
       3, 4, 6, 10,    //
       9, 10, 12, 16,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<float>(), ElementsAreArray(ArrayFloatNear({
                                         3, 4, 5, 8, 6, 10,      //
                                         7, 8, 9, 12, 10, 14,    //
@@ -238,7 +279,7 @@ TEST_P(ResizeBilinearOpTest, TwoDimensionalResizeWithTwoBatchesUInt8) {
       4, 10,  //
       12, 16  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<uint8>(), ElementsAreArray(ArrayFloatNear(
                                         {
                                             3, 5, 6,     //
@@ -261,7 +302,7 @@ TEST_P(ResizeBilinearOpTest,
       4, 10,  //
       12, 16  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<uint8>(), ElementsAreArray(ArrayFloatNear(
                                         {
                                             2, 4, 6,     //
@@ -282,7 +323,7 @@ TEST_P(ResizeBilinearOpTest, TwoDimensionalResizeWithTwoBatchesInt8) {
       4, 10,  //
       12, 16  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<int8_t>(), ElementsAreArray(ArrayFloatNear(
                                          {
                                              3, 5, 6,     //
@@ -295,13 +336,37 @@ TEST_P(ResizeBilinearOpTest, TwoDimensionalResizeWithTwoBatchesInt8) {
                                          /*max_abs_error=*/1)));
 }
 
+TEST_P(ResizeBilinearOpTest, TwoDimensionalResizeWithTwoBatchesInt16) {
+  if (SingleOpModel::GetForceUseNnapi()) {
+    return;
+  }
+  ResizeBilinearOpModel m({TensorType_INT16, {2, 2, 2, 1}}, {3, 3}, GetParam());
+  m.SetInput<int16_t>({
+      3, 6,   //
+      9, 12,  //
+      4, 10,  //
+      12, 16  //
+  });
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput<int16_t>(), ElementsAreArray(ArrayFloatNear(
+                                          {
+                                              3, 5, 6,     //
+                                              7, 9, 10,    //
+                                              9, 11, 12,   //
+                                              4, 8, 10,    //
+                                              9, 12, 13,   //
+                                              12, 14, 16,  //
+                                          },
+                                          /*max_abs_error=*/1)));
+}
+
 TEST_P(ResizeBilinearOpTest, ThreeDimensionalResizeUInt8) {
   ResizeBilinearOpModel m({TensorType_UINT8, {1, 2, 2, 2}}, {3, 3}, GetParam());
   m.SetInput<uint8>({
       3, 4, 6, 10,     //
       10, 12, 14, 16,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<uint8>(), ElementsAreArray(ArrayFloatNear(
                                         {
                                             3, 4, 5, 8, 6, 10,       //
@@ -317,7 +382,7 @@ TEST_P(ResizeBilinearOpTest, ThreeDimensionalResizeInt8) {
       3, 4, 6, 10,     //
       10, 12, 14, 16,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<int8_t>(), ElementsAreArray(ArrayFloatNear(
                                          {
                                              3, 4, 5, 8, 6, 10,       //
@@ -325,6 +390,52 @@ TEST_P(ResizeBilinearOpTest, ThreeDimensionalResizeInt8) {
                                              10, 12, 12, 14, 14, 16,  //
                                          },
                                          /*max_abs_error=*/1)));
+}
+
+TEST_P(ResizeBilinearOpTest, ThreeDimensionalResizeInt16) {
+  if (SingleOpModel::GetForceUseNnapi()) {
+    return;
+  }
+  ResizeBilinearOpModel m({TensorType_INT16, {1, 2, 2, 2}}, {3, 3}, GetParam());
+  m.SetInput<int16_t>({
+      3, 4, 6, 10,     //
+      10, 12, 14, 16,  //
+  });
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput<int16_t>(), ElementsAreArray(ArrayFloatNear(
+                                          {
+                                              3, 4, 5, 8, 6, 10,       //
+                                              7, 9, 10, 12, 11, 13,    //
+                                              10, 12, 12, 14, 14, 16,  //
+                                          },
+                                          /*max_abs_error=*/1)));
+}
+
+TEST_P(ResizeBilinearOpTest, HorizontalResizeExtremeValuesUInt8) {
+  ResizeBilinearOpModel m({TensorType_UINT8, {1, 1, 2, 1}}, {1, 3}, GetParam());
+  m.SetInput<uint8_t>({253, 255});
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput<uint8>(),
+              ElementsAreArray(ArrayFloatNear({253, 254, 255})));
+}
+
+TEST_P(ResizeBilinearOpTest, HorizontalResizeExtremeValuesInt8) {
+  ResizeBilinearOpModel m({TensorType_INT8, {1, 1, 2, 1}}, {1, 3}, GetParam());
+  m.SetInput<int8_t>({125, 127});
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput<int8_t>(),
+              ElementsAreArray(ArrayFloatNear({125, 126, 127})));
+}
+
+TEST_P(ResizeBilinearOpTest, HorizontalResizeExtremeValuesInt16) {
+  if (SingleOpModel::GetForceUseNnapi()) {
+    return;
+  }
+  ResizeBilinearOpModel m({TensorType_INT16, {1, 1, 2, 1}}, {1, 3}, GetParam());
+  m.SetInput<int16_t>({32765, 32767});
+  ASSERT_EQ(m.InvokeUnchecked(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput<int16_t>(),
+              ElementsAreArray(ArrayFloatNear({32765, 32766, 32767})));
 }
 
 INSTANTIATE_TEST_SUITE_P(ResizeBilinearOpTest, ResizeBilinearOpTest,

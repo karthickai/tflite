@@ -25,8 +25,8 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/cl/environment.h"
 #include "tensorflow/lite/delegates/gpu/cl/inference_context.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
+#include "tensorflow/lite/delegates/gpu/common/model_builder.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
-#include "tensorflow/lite/delegates/gpu/common/testing/tflite_model_reader.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/kernels/register.h"
 
@@ -90,9 +90,7 @@ absl::Status RunModelSampleWithInternalAPISerializedKernels(
     const std::string& model_name, const std::vector<uint8_t>& kernel_cache);
 
 absl::Status RunModelSampleWithInternalAPISerialized(
-    tflite::Interpreter* cpu, const std::vector<int64_t>& in_refs,
-    const std::vector<int64_t>& out_refs,
-    const std::vector<uint8_t>& kernel_cache,
+    tflite::Interpreter* cpu, const std::vector<uint8_t>& kernel_cache,
     const std::vector<uint8_t>& serialized_model);
 
 // Run Jet with OpenCL internal API and compares correctness with TFLite CPU
@@ -317,8 +315,11 @@ absl::Status RunModelSampleWithInternalAPISerializedKernels(
   RETURN_IF_ERROR(builder->Build(&runner));
 
   const auto end = std::chrono::high_resolution_clock::now();
-  std::cout << "Initialization total time(with kernel cache) - "
-            << (end - start).count() * 1e-6f << "ms" << std::endl;
+  std::cout << "Initialization total time";
+  if (!kernel_cache.empty()) {
+    std::cout << "(with kernel cache)";
+  }
+  std::cout << " - " << (end - start).count() * 1e-6f << "ms" << std::endl;
 
   // Sets the input/output object.
   for (int i = 0; i < in_refs.size(); ++i) {
@@ -340,15 +341,13 @@ absl::Status RunModelSampleWithInternalAPISerializedKernels(
   CompareCPUGPUResults(cpu_inference.get(), out_refs, output_tensors, 1e-4f);
 
   RETURN_IF_ERROR(RunModelSampleWithInternalAPISerialized(
-      cpu_inference.get(), in_refs, out_refs, kernel_cache, serialized_model));
+      cpu_inference.get(), kernel_cache, serialized_model));
 
   return absl::OkStatus();
 }
 
 absl::Status RunModelSampleWithInternalAPISerialized(
-    tflite::Interpreter* cpu, const std::vector<int64_t>& in_refs,
-    const std::vector<int64_t>& out_refs,
-    const std::vector<uint8_t>& kernel_cache,
+    tflite::Interpreter* cpu, const std::vector<uint8_t>& kernel_cache,
     const std::vector<uint8_t>& serialized_model) {
   FillInputTensors(cpu);
   auto status = cpu->Invoke();
@@ -371,6 +370,9 @@ absl::Status RunModelSampleWithInternalAPISerialized(
       absl::MakeSpan(kernel_cache.data(), kernel_cache.size());
   RETURN_IF_ERROR(NewInferenceEnvironment(env_options, &inf_env, nullptr));
 
+  std::vector<int64_t> in_refs;
+  std::vector<int64_t> out_refs;
+  RETURN_IF_ERROR(GetInOutRefs(serialized_model, &in_refs, &out_refs));
   std::unique_ptr<InferenceBuilder> builder;
   RETURN_IF_ERROR(inf_env->NewInferenceBuilder(serialized_model, &builder));
 
@@ -392,8 +394,13 @@ absl::Status RunModelSampleWithInternalAPISerialized(
   RETURN_IF_ERROR(builder->Build(&runner));
 
   const auto end = std::chrono::high_resolution_clock::now();
-  std::cout << "Serialized initialization total time - "
-            << (end - start).count() * 1e-6f << "ms" << std::endl;
+  std::cout << "Serialized initialization total time";
+  if (kernel_cache.empty()) {
+    std::cout << "(without kernel cache)";
+  } else {
+    std::cout << "(with kernel cache)";
+  }
+  std::cout << " - " << (end - start).count() * 1e-6f << "ms" << std::endl;
 
   // Sets the input/output object.
   for (int i = 0; i < in_refs.size(); ++i) {
@@ -444,6 +451,14 @@ int main(int argc, char** argv) {
   }
   run_status = tflite::gpu::cl::RunModelSampleWithInternalAPISerializedKernels(
       argv[1], kernel_cache);
+  if (!run_status.ok()) {
+    std::cerr << run_status.message();
+    return -1;
+  }
+
+  // The same with empty kernels cache.
+  run_status = tflite::gpu::cl::RunModelSampleWithInternalAPISerializedKernels(
+      argv[1], {});
   if (!run_status.ok()) {
     std::cerr << run_status.message();
     return -1;

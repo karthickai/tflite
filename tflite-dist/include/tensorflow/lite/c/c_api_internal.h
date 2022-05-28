@@ -26,6 +26,7 @@ limitations under the License.
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/model.h"
 #include "tensorflow/lite/mutable_op_resolver.h"
+#include "tensorflow/lite/signature_runner.h"
 
 // Internal structures and subroutines used by the C API. These are likely to
 // change and should not be depended on directly by any C API clients.
@@ -87,6 +88,12 @@ struct TfLiteInterpreterOptions {
   TfLiteErrorReporterCallback error_reporter_callback;
 
   bool use_nnapi = false;
+
+  // Determines whether to allow automatic fallback to CPU.
+  // If true, and if one or more delegates were set,
+  // then if Invoke with delegates fails, it will be
+  // automatically retried without delegates.
+  bool enable_delegate_fallback = false;
 };
 
 struct TfLiteInterpreter {
@@ -100,6 +107,15 @@ struct TfLiteInterpreter {
   std::unique_ptr<tflite::ErrorReporter> optional_error_reporter;
 
   std::unique_ptr<tflite::Interpreter> impl;
+
+  bool enable_delegate_fallback;
+};
+
+struct TfLiteSignatureRunner {
+  // The tflite::SignatureRunner runner object that this points to is owned by
+  // the interpreter. So this pointer will become invalid when the interpreter
+  // is destroyed.
+  tflite::SignatureRunner* impl;
 };
 
 namespace tflite {
